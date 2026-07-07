@@ -1,6 +1,7 @@
 using CodeIndexer.Core.Nodes;
 using CodeIndexer.Core.Parsing;
 using CodeIndexer.Indexing.Discovery;
+using CodeIndexer.Indexing.Relationships;
 using CodeIndexer.Indexing.Sessions;
 using CodeIndexer.Storage;
 
@@ -60,12 +61,13 @@ public sealed class IndexOrchestrator
             }
         }
 
-        _indexStore.Write(session.IndexFilePath, nodes);
+        var resolvedNodes = RelationshipResolver.Resolve(nodes);
+        _indexStore.Write(session.IndexFilePath, resolvedNodes);
 
         return new IndexRunResult
         {
             FilesDiscovered = files.Count,
-            NodesIndexed = nodes.Count,
+            NodesIndexed = resolvedNodes.Count,
             SkippedFiles = skipped,
         };
     }

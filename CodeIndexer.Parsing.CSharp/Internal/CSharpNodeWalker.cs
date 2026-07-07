@@ -132,6 +132,7 @@ internal sealed class CSharpNodeWalker : CSharpSyntaxWalker
         var isTopLevel = _scope.Count == 0;
         var signature = SignatureBuilder.ForType(node, keyword);
         var metadata = MetadataBuilder.Build(node.Modifiers, isTopLevel, node.AttributeLists);
+        metadata = metadata.WithBaseTypes(node.BaseList?.Types.Select(t => t.Type.ToString()));
         Emit(kind, node.Identifier.Text, node, signature, Array.Empty<ParameterInfo>(), null, metadata);
 
         _scope.Push(node.Identifier.Text);

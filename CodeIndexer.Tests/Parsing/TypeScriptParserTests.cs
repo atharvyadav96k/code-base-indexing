@@ -97,8 +97,8 @@ public class TypeScriptParserTests
         var nodes = await ParseAsync(source);
 
         var cls = Assert.Single(nodes, n => n.Name == "Repo");
-        Assert.Contains("extends", cls.Summary.Signature);
-        Assert.Contains("implements", cls.Summary.Signature);
+        Assert.Equal("class Repo extends Base implements Base", cls.Summary.Signature);
+        Assert.Equal("Base;Base", cls.Metadata.Extra[NodeMetadataExtensions.BaseTypesExtraKey]);
     }
 
     [Fact]

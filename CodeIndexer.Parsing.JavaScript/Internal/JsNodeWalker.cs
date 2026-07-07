@@ -37,7 +37,10 @@ internal sealed class JsNodeWalker : AstVisitor
         var superText = node.SuperClass is Identifier superId ? $" extends {superId.Name}" : string.Empty;
         var signature = $"class {name}{superText}";
 
-        Emit(NodeKind.Class, name, node, signature, Array.Empty<ParameterInfo>(), null, new NodeMetadata { IsPrivate = true });
+        var metadata = new NodeMetadata { IsPrivate = true }
+            .WithBaseTypes(node.SuperClass is Identifier super ? new[] { super.Name } : null);
+
+        Emit(NodeKind.Class, name, node, signature, Array.Empty<ParameterInfo>(), null, metadata);
 
         _scope.Push(name);
         var result = base.VisitClassDeclaration(node);

@@ -5,6 +5,7 @@ using CodeIndexer.Parsing.CSharp;
 using CodeIndexer.Parsing.JavaScript;
 using CodeIndexer.Parsing.TypeScript;
 using CodeIndexer.Search;
+using CodeIndexer.Search.Relationships;
 using CodeIndexer.Search.Structure;
 using CodeIndexer.Storage;
 
@@ -43,6 +44,22 @@ switch (command)
 
     case "locate":
         RunLocate(arg1 ?? string.Empty);
+        break;
+
+    case "refs":
+        RunRefs(arg1 ?? string.Empty);
+        break;
+
+    case "callers":
+        RunCallers(arg1 ?? string.Empty);
+        break;
+
+    case "callees":
+        RunCallees(arg1 ?? string.Empty);
+        break;
+
+    case "subtypes":
+        RunSubtypes(arg1 ?? string.Empty);
         break;
 
     default:
@@ -216,6 +233,70 @@ void RunLocate(string fragment)
     }
 }
 
+void PrintNodeList(IReadOnlyList<CodeIndexer.Core.Nodes.CodeNode> matches)
+{
+    if (matches.Count == 0)
+    {
+        Console.WriteLine("(none found)");
+        return;
+    }
+
+    foreach (var node in matches)
+    {
+        Console.WriteLine($"{node.Id}  {node.Kind,-10} {node.QualifiedName}  ({node.Location.FilePath}:{node.Location.StartLine})");
+    }
+}
+
+void RunRefs(string nodeId)
+{
+    if (!TryLoadSessionNodes(out var nodes))
+    {
+        return;
+    }
+
+    var hits = new ReferenceFinder().FindReferences(nodes, nodeId);
+    if (hits.Count == 0)
+    {
+        Console.WriteLine("(no references found)");
+        return;
+    }
+
+    foreach (var hit in hits)
+    {
+        Console.WriteLine($"{hit.Source.Id}  {hit.Kind,-10} {hit.Source.QualifiedName}  ({hit.Source.Location.FilePath}:{hit.Source.Location.StartLine})");
+    }
+}
+
+void RunCallers(string nodeId)
+{
+    if (!TryLoadSessionNodes(out var nodes))
+    {
+        return;
+    }
+
+    PrintNodeList(new ReferenceFinder().GetCallers(nodes, nodeId));
+}
+
+void RunCallees(string nodeId)
+{
+    if (!TryLoadSessionNodes(out var nodes))
+    {
+        return;
+    }
+
+    PrintNodeList(new ReferenceFinder().GetCallees(nodes, nodeId));
+}
+
+void RunSubtypes(string nodeId)
+{
+    if (!TryLoadSessionNodes(out var nodes))
+    {
+        return;
+    }
+
+    PrintNodeList(new ReferenceFinder().GetSubtypes(nodes, nodeId));
+}
+
 void PrintHelp()
 {
     Console.WriteLine("""
@@ -227,5 +308,9 @@ void PrintHelp()
           tree                 Print the directory tree of indexed files
           outline               Print the namespace/scope outline
           locate <fragment>    Find files by name or path fragment
+          refs <nodeId>        Find every node that references this one (any edge kind)
+          callers <nodeId>     Find nodes that call this one
+          callees <nodeId>     Find nodes this one calls
+          subtypes <nodeId>    Find types that inherit from/implement this one
         """);
 }

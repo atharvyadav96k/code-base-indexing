@@ -97,10 +97,12 @@ internal sealed class TsNodeWalker
     private void EmitTypeAndRecurse(Node node, NodeKind kind, string keyword)
     {
         var name = string.IsNullOrEmpty(node.IdentifierStr) ? "default" : node.IdentifierStr;
+        var baseTypeNames = BaseTypeNamesOf(node).ToArray();
         var heritage = HeritageOf(node);
         var signature = $"{keyword} {name}{heritage}";
 
-        Emit(kind, name, node, signature, Array.Empty<ParameterInfo>(), null, MetadataOf(node, isTopLevel: true));
+        var metadata = MetadataOf(node, isTopLevel: true).WithBaseTypes(baseTypeNames);
+        Emit(kind, name, node, signature, Array.Empty<ParameterInfo>(), null, metadata);
 
         _scope.Push(name);
         WalkChildren(MembersOf(node));
@@ -114,24 +116,22 @@ internal sealed class TsNodeWalker
         _ => Enumerable.Empty<Node>(),
     };
 
-    private static string HeritageOf(Node node)
+    private static IEnumerable<HeritageClause> HeritageClausesOf(Node node) => node switch
     {
-        var clauses = node switch
-        {
-            ClassDeclaration cls => cls.HeritageClauses,
-            InterfaceDeclaration iface => iface.HeritageClauses,
-            _ => null,
-        };
+        ClassDeclaration cls => cls.HeritageClauses?.Cast<HeritageClause>() ?? Enumerable.Empty<HeritageClause>(),
+        InterfaceDeclaration iface => iface.HeritageClauses?.Cast<HeritageClause>() ?? Enumerable.Empty<HeritageClause>(),
+        _ => Enumerable.Empty<HeritageClause>(),
+    };
 
-        if (clauses is null)
-        {
-            return string.Empty;
-        }
+    private IEnumerable<string> BaseTypeNamesOf(Node node) =>
+        HeritageClausesOf(node).SelectMany(clause => clause.Types.Select(t => t.GetText(_sourceText)));
 
-        var parts = clauses.Cast<HeritageClause>().Select(clause =>
+    private string HeritageOf(Node node)
+    {
+        var parts = HeritageClausesOf(node).Select(clause =>
         {
             var keyword = clause.Token == SyntaxKind.ExtendsKeyword ? "extends" : "implements";
-            var types = string.Join(", ", clause.Types);
+            var types = string.Join(", ", clause.Types.Select(t => t.GetText(_sourceText)));
             return $"{keyword} {types}";
         });
 

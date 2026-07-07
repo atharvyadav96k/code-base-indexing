@@ -4,6 +4,7 @@ using CodeIndexer.Indexing;
 using CodeIndexer.Indexing.Sessions;
 using CodeIndexer.Parsing.CSharp;
 using CodeIndexer.Search;
+using CodeIndexer.Search.Relationships;
 using CodeIndexer.Search.Structure;
 using CodeIndexer.Storage;
 using Xunit;
@@ -178,6 +179,61 @@ public class EndToEndTests : IDisposable
 
         var located = FileLocator.Locate(files, "UserService");
         Assert.Single(located);
+    }
+
+    [Fact]
+    public async Task FullPipeline_RelationshipEdges_SurviveParseResolveAndBinaryRoundTrip()
+    {
+        WriteSource("src/IGreeter.cs", """
+            namespace SampleApp;
+            public interface IGreeter
+            {
+                string Greet(string name);
+            }
+            """);
+        WriteSource("src/Greeter.cs", """
+            namespace SampleApp;
+            public class Greeter : IGreeter
+            {
+                public string Greet(string name)
+                {
+                    return Format(name);
+                }
+
+                private string Format(string name)
+                {
+                    return "Hello, " + name;
+                }
+            }
+            """);
+
+        var (_, nodes, _) = await IndexAsync();
+
+        var greeterClass = Assert.Single(nodes, n => n.Kind == NodeKind.Class && n.Name == "Greeter");
+        var iGreeterInterface = Assert.Single(nodes, n => n.Kind == NodeKind.Interface && n.Name == "IGreeter");
+        var greetMethod = Assert.Single(nodes, n => n.QualifiedName == "SampleApp.Greeter.Greet");
+        var formatMethod = Assert.Single(nodes, n => n.QualifiedName == "SampleApp.Greeter.Format");
+
+        // Implements edge survived Roslyn parsing -> RelationshipResolver -> binary write -> binary read.
+        Assert.Contains(greeterClass.Edges, e => e.Kind == EdgeKind.Implements && e.TargetNodeId == iGreeterInterface.Id);
+
+        // Call graph edge: Greet() calls Format().
+        Assert.Contains(greetMethod.Edges, e => e.Kind == EdgeKind.Calls && e.TargetNodeId == formatMethod.Id);
+
+        // Containment edge: the class contains both of its methods.
+        Assert.Contains(greeterClass.Edges, e => e.Kind == EdgeKind.Contains && e.TargetNodeId == greetMethod.Id);
+        Assert.Contains(greeterClass.Edges, e => e.Kind == EdgeKind.Contains && e.TargetNodeId == formatMethod.Id);
+
+        // Phase 8 reference lookup, driven off the same persisted edges.
+        var finder = new ReferenceFinder();
+        var implementers = finder.GetSubtypes(nodes, iGreeterInterface.Id);
+        Assert.Contains(implementers, n => n.Id == greeterClass.Id);
+
+        var callersOfFormat = finder.GetCallers(nodes, formatMethod.Id);
+        Assert.Contains(callersOfFormat, n => n.Id == greetMethod.Id);
+
+        var calleesOfGreet = finder.GetCallees(nodes, greetMethod.Id);
+        Assert.Contains(calleesOfGreet, n => n.Id == formatMethod.Id);
     }
 
     public void Dispose()
