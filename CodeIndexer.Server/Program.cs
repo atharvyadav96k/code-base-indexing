@@ -2,12 +2,13 @@ using CodeIndexer.Core.Parsing;
 using CodeIndexer.Indexing;
 using CodeIndexer.Indexing.Sessions;
 using CodeIndexer.Parsing.CSharp;
+using CodeIndexer.Parsing.JavaScript;
 using CodeIndexer.Search;
 using CodeIndexer.Search.Structure;
 using CodeIndexer.Storage;
 
 // Composition root: this is the only place a concrete parser is referenced.
-IReadOnlyList<ICodeParser> parsers = new ICodeParser[] { new CSharpParser() };
+IReadOnlyList<ICodeParser> parsers = new ICodeParser[] { new CSharpParser(), new JavaScriptParser() };
 
 var command = args.Length > 0 ? args[0] : "help";
 var arg1 = args.Length > 1 ? args[1] : null;

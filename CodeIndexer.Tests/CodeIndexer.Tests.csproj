@@ -27,6 +27,7 @@
     <ProjectReference Include="..\CodeIndexer.Search\CodeIndexer.Search.csproj" />
     <ProjectReference Include="..\CodeIndexer.Parsing.CSharp\CodeIndexer.Parsing.CSharp.csproj" />
     <ProjectReference Include="..\CodeIndexer.Server\CodeIndexer.Server.csproj" />
+    <ProjectReference Include="..\CodeIndexer.Parsing.JavaScript\CodeIndexer.Parsing.JavaScript.csproj" />
   </ItemGroup>
 
 </Project>
