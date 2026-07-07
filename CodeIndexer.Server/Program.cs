@@ -101,7 +101,7 @@ void RunSearch(string pattern)
     var hits = new NodeSearchEngine().Search(nodes, new SearchQuery { NamePattern = pattern, MaxResults = 25 });
     foreach (var hit in hits)
     {
-        Console.WriteLine($"{hit.Id}  {hit.Name}");
+        Console.WriteLine($"{hit.Id}  {hit.Kind,-10} {hit.Name}");
     }
 }
 
