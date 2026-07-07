@@ -45,7 +45,7 @@ public sealed class ReferenceFinder
             return Array.Empty<CodeNode>();
         }
 
-        var byId = allNodes.ToDictionary(n => n.Id);
+        var byId = allNodes.GroupBy(n => n.Id).ToDictionary(g => g.Key, g => g.First());
         return source.Edges
             .Where(e => e.Kind == EdgeKind.Calls)
             .Select(e => byId.GetValueOrDefault(e.TargetNodeId))

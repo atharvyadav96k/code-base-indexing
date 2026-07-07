@@ -40,7 +40,15 @@ public static class RelationshipResolver
 
     public static IReadOnlyList<CodeNode> Resolve(IReadOnlyList<CodeNode> nodes)
     {
-        var edgesByNodeId = nodes.ToDictionary(n => n.Id, _ => new List<NodeEdge>());
+        // Node IDs are meant to be unique, but this must never crash on a real
+        // repo just because two declarations happened to hash identically (or
+        // the same file was somehow discovered twice) — last-write-wins here,
+        // same as everywhere else nodes are keyed by ID.
+        var edgesByNodeId = new Dictionary<string, List<NodeEdge>>();
+        foreach (var node in nodes)
+        {
+            edgesByNodeId[node.Id] = new List<NodeEdge>();
+        }
 
         ResolveContainment(nodes, edgesByNodeId);
         ResolveInheritance(nodes, edgesByNodeId);

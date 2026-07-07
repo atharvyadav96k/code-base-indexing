@@ -66,6 +66,20 @@ public class ReferenceFinderTests
     }
 
     [Fact]
+    public void GetCallees_DuplicateNodeIdsInProject_DoesNotThrow()
+    {
+        // Real large repos can produce duplicate node IDs (e.g. a file discovered
+        // twice via a symlink). GetCallees must degrade gracefully, not crash.
+        var callee = MakeNode("callee", "Callee", NodeKind.Method);
+        var duplicateOfCallee = MakeNode("callee", "Callee", NodeKind.Method);
+        var caller = MakeNode("caller", "Caller", NodeKind.Method, new[] { new NodeEdge { Kind = EdgeKind.Calls, TargetNodeId = "callee" } });
+
+        var callees = new ReferenceFinder().GetCallees(new[] { callee, duplicateOfCallee, caller }, "caller");
+
+        Assert.Single(callees);
+    }
+
+    [Fact]
     public void GetCallees_UnknownSourceId_ReturnsEmpty()
     {
         var callees = new ReferenceFinder().GetCallees(Array.Empty<CodeNode>(), "missing");

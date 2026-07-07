@@ -14,7 +14,10 @@ public sealed class FileDiscoverer
 
         Walk(root, root, options, gitignore, results);
 
-        return results;
+        // Defends against a directory symlink/junction pointing back into an
+        // already-walked part of the tree (common with build tooling caches)
+        // causing the same file to be discovered — and later parsed — twice.
+        return results.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
     }
 
     private static void Walk(

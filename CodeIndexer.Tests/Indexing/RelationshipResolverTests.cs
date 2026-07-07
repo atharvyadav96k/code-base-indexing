@@ -31,6 +31,19 @@ public class RelationshipResolverTests
     }
 
     [Fact]
+    public void Resolve_DuplicateNodeIds_DoesNotThrow()
+    {
+        // Real large repos can produce duplicate node IDs (e.g. a file discovered
+        // twice via a symlink/junction). Resolve must degrade gracefully, not crash.
+        var node = MakeNode("Foo", "App.Foo", NodeKind.Class);
+        var duplicate = MakeNode("Foo", "App.Foo", NodeKind.Class);
+
+        var resolved = RelationshipResolver.Resolve(new[] { node, duplicate });
+
+        Assert.Equal(2, resolved.Count);
+    }
+
+    [Fact]
     public void Resolve_ParentGetsContainsEdgeToChild()
     {
         var parent = MakeNode("Foo", "App.Foo", NodeKind.Class);
