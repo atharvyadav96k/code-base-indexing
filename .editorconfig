@@ -1,0 +1,20 @@
+root = true
+
+[*]
+indent_style = space
+indent_size = 4
+end_of_line = lf
+insert_final_newline = true
+charset = utf-8-bom
+
+[*.cs]
+csharp_style_namespace_declarations = file_scoped:error
+dotnet_naming_rule.interfaces_start_with_i.severity = warning
+dotnet_naming_rule.interfaces_start_with_i.symbols = interface_symbol
+dotnet_naming_rule.interfaces_start_with_i.style = i_prefix_style
+dotnet_naming_symbols.interface_symbol.applicable_kinds = interface
+dotnet_naming_style.i_prefix_style.required_prefix = I
+dotnet_naming_style.i_prefix_style.capitalization = pascal_case
+
+[*.{json,yml,yaml}]
+indent_size = 2

@@ -1,0 +1,192 @@
+using CodeIndexer.Core.Parsing;
+using CodeIndexer.Indexing;
+using CodeIndexer.Indexing.Sessions;
+using CodeIndexer.Parsing.CSharp;
+using CodeIndexer.Search;
+using CodeIndexer.Search.Structure;
+using CodeIndexer.Storage;
+
+// Composition root: this is the only place a concrete parser is referenced.
+IReadOnlyList<ICodeParser> parsers = new ICodeParser[] { new CSharpParser() };
+
+var command = args.Length > 0 ? args[0] : "help";
+var arg1 = args.Length > 1 ? args[1] : null;
+var workingDirectory = Directory.GetCurrentDirectory();
+
+switch (command)
+{
+    case "index":
+        await RunIndexAsync(arg1 ?? workingDirectory);
+        break;
+
+    case "search":
+        RunSearch(arg1 ?? string.Empty);
+        break;
+
+    case "get-code":
+        RunGetCode(arg1 ?? string.Empty);
+        break;
+
+    case "tree":
+        RunTree();
+        break;
+
+    case "outline":
+        RunOutline();
+        break;
+
+    case "locate":
+        RunLocate(arg1 ?? string.Empty);
+        break;
+
+    default:
+        PrintHelp();
+        break;
+}
+
+async Task RunIndexAsync(string directory)
+{
+    var sessionManager = new SessionManager(new SessionRegistry());
+    var session = sessionManager.EnsureSession(directory);
+
+    var orchestrator = new IndexOrchestrator(parsers);
+    var result = await orchestrator.RunFullIndexAsync(session, CancellationToken.None);
+
+    Console.WriteLine($"Indexed {result.NodesIndexed} nodes from {result.FilesDiscovered} files at {session.RootPath}");
+    if (result.SkippedFiles.Count > 0)
+    {
+        Console.WriteLine($"Skipped {result.SkippedFiles.Count} file(s):");
+        foreach (var skip in result.SkippedFiles)
+        {
+            Console.WriteLine($"  - {skip}");
+        }
+    }
+}
+
+bool TryLoadSessionNodes(out IReadOnlyList<CodeIndexer.Core.Nodes.CodeNode> nodes)
+{
+    nodes = Array.Empty<CodeIndexer.Core.Nodes.CodeNode>();
+    var sessionManager = new SessionManager(new SessionRegistry());
+    var resolution = sessionManager.TryResolve(workingDirectory);
+    if (!resolution.Found)
+    {
+        Console.WriteLine("No session here. Run 'index' first.");
+        return false;
+    }
+
+    var readResult = new BinaryIndexStore().Read(resolution.Session!.IndexFilePath);
+    if (!readResult.Success)
+    {
+        Console.WriteLine($"Index unreadable ({readResult.Status}): {readResult.Detail}. Run 'index' again to rebuild.");
+        return false;
+    }
+
+    nodes = readResult.Nodes;
+    return true;
+}
+
+void RunSearch(string pattern)
+{
+    if (!TryLoadSessionNodes(out var nodes))
+    {
+        return;
+    }
+
+    var hits = new NodeSearchEngine().Search(nodes, new SearchQuery { NamePattern = pattern, MaxResults = 25 });
+    foreach (var hit in hits)
+    {
+        Console.WriteLine($"[{hit.Score,3}] {hit.Kind,-10} {hit.QualifiedName}  ({hit.Location.FilePath}:{hit.Location.StartLine})  id={hit.Id}");
+    }
+}
+
+void RunGetCode(string nodeId)
+{
+    if (!TryLoadSessionNodes(out var nodes))
+    {
+        return;
+    }
+
+    var result = new NodeRetriever().GetCode(nodes, nodeId);
+    if (!result.Found)
+    {
+        Console.WriteLine("Node not found.");
+        return;
+    }
+
+    Console.WriteLine(result.Body);
+}
+
+void RunTree()
+{
+    if (!TryLoadSessionNodes(out var nodes))
+    {
+        return;
+    }
+
+    var sessionManager = new SessionManager(new SessionRegistry());
+    var resolution = sessionManager.TryResolve(workingDirectory);
+    var files = nodes.Select(n => n.Location.FilePath).Distinct().ToArray();
+    var tree = DirectoryTreeBuilder.Build(resolution.Session!.RootPath, files);
+    PrintTree(tree, 0);
+}
+
+void PrintTree(DirectoryTreeNode node, int depth)
+{
+    Console.WriteLine(new string(' ', depth * 2) + node.Name);
+    foreach (var child in node.Children)
+    {
+        PrintTree(child, depth + 1);
+    }
+}
+
+void RunOutline()
+{
+    if (!TryLoadSessionNodes(out var nodes))
+    {
+        return;
+    }
+
+    var outline = ScopeOutlineBuilder.Build(nodes);
+    foreach (var top in outline)
+    {
+        PrintOutline(top, 0);
+    }
+}
+
+void PrintOutline(ScopeOutlineNode node, int depth)
+{
+    var kindLabel = node.Kind is { } k ? $" [{k}]" : string.Empty;
+    Console.WriteLine(new string(' ', depth * 2) + node.Name + kindLabel);
+    foreach (var child in node.Children)
+    {
+        PrintOutline(child, depth + 1);
+    }
+}
+
+void RunLocate(string fragment)
+{
+    if (!TryLoadSessionNodes(out var nodes))
+    {
+        return;
+    }
+
+    var files = nodes.Select(n => n.Location.FilePath).Distinct().ToArray();
+    var matches = FileLocator.Locate(files, fragment);
+    foreach (var match in matches)
+    {
+        Console.WriteLine(match);
+    }
+}
+
+void PrintHelp()
+{
+    Console.WriteLine("""
+        CodeIndexer — usage:
+          index [path]         Full re-index of the session rooted at path (default: cwd)
+          search <pattern>     Search node names, ranked
+          get-code <nodeId>    Print the full body of a node by ID
+          tree                 Print the directory tree of indexed files
+          outline               Print the namespace/scope outline
+          locate <fragment>    Find files by name or path fragment
+        """);
+}

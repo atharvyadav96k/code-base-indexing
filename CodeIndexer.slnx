@@ -1,0 +1,9 @@
+<Solution>
+  <Project Path="CodeIndexer.Core/CodeIndexer.Core.csproj" />
+  <Project Path="CodeIndexer.Indexing/CodeIndexer.Indexing.csproj" />
+  <Project Path="CodeIndexer.Parsing.CSharp/CodeIndexer.Parsing.CSharp.csproj" />
+  <Project Path="CodeIndexer.Search/CodeIndexer.Search.csproj" />
+  <Project Path="CodeIndexer.Server/CodeIndexer.Server.csproj" />
+  <Project Path="CodeIndexer.Storage/CodeIndexer.Storage.csproj" />
+  <Project Path="CodeIndexer.Tests/CodeIndexer.Tests.csproj" />
+</Solution>

@@ -1,0 +1,18 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\CodeIndexer.Core\CodeIndexer.Core.csproj" />
+    <ProjectReference Include="..\CodeIndexer.Storage\CodeIndexer.Storage.csproj" />
+    <ProjectReference Include="..\CodeIndexer.Indexing\CodeIndexer.Indexing.csproj" />
+    <ProjectReference Include="..\CodeIndexer.Search\CodeIndexer.Search.csproj" />
+    <ProjectReference Include="..\CodeIndexer.Parsing.CSharp\CodeIndexer.Parsing.CSharp.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+</Project>
