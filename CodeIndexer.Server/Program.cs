@@ -101,9 +101,18 @@ void RunSearch(string pattern)
     var hits = new NodeSearchEngine().Search(nodes, new SearchQuery { NamePattern = pattern, MaxResults = 25 });
     foreach (var hit in hits)
     {
-        Console.WriteLine($"{hit.Id}  {hit.Kind,-10} {hit.Name}");
+        var lang = LanguageOf(hit.Location.FilePath);
+        Console.WriteLine($"{hit.Id}  [{lang}]{new string(' ', Math.Max(1, 5 - lang.Length))}{hit.Kind,-10} {hit.Name}");
     }
 }
+
+string LanguageOf(string filePath) => Path.GetExtension(filePath).ToLowerInvariant() switch
+{
+    ".cs" => "c#",
+    ".js" or ".mjs" or ".cjs" or ".jsx" => "js",
+    ".ts" or ".mts" or ".cts" => "ts",
+    var ext => ext.TrimStart('.'),
+};
 
 void RunInfo(string nodeId)
 {
