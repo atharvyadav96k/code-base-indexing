@@ -30,6 +30,8 @@ internal static class NodeBinarySerializer
             writer.Write((int)edge.Kind);
             writer.Write(edge.TargetNodeId);
         }
+
+        WriteStringList(writer, node.SkippedRelationships);
     }
 
     public static CodeNode Read(BinaryReader reader)
@@ -60,6 +62,8 @@ internal static class NodeBinarySerializer
             edges[i] = new NodeEdge { Kind = edgeKind, TargetNodeId = targetId };
         }
 
+        var skippedRelationships = ReadStringList(reader);
+
         return new CodeNode
         {
             Id = id,
@@ -74,6 +78,7 @@ internal static class NodeBinarySerializer
             Metadata = metadata,
             ContentHash = contentHash,
             Edges = edges,
+            SkippedRelationships = skippedRelationships,
         };
     }
 

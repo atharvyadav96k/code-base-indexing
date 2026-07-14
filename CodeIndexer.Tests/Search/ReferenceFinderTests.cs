@@ -101,6 +101,33 @@ public class ReferenceFinderTests
     }
 
     [Fact]
+    public void GetChildren_ResolvesContainsEdgesToDirectMembers()
+    {
+        var method = MakeNode("method", "DoWork", NodeKind.Method);
+        var field = MakeNode("field", "_state", NodeKind.Field);
+        var container = MakeNode("class", "Worker", NodeKind.Class, new[]
+        {
+            new NodeEdge { Kind = EdgeKind.Contains, TargetNodeId = "method" },
+            new NodeEdge { Kind = EdgeKind.Contains, TargetNodeId = "field" },
+        });
+        var unrelated = MakeNode("other", "Other", NodeKind.Method);
+
+        var children = new ReferenceFinder().GetChildren(new[] { method, field, container, unrelated }, "class");
+
+        Assert.Equal(2, children.Count);
+        Assert.Contains(children, c => c.Id == "method");
+        Assert.Contains(children, c => c.Id == "field");
+    }
+
+    [Fact]
+    public void GetChildren_UnknownContainerId_ReturnsEmpty()
+    {
+        var children = new ReferenceFinder().GetChildren(Array.Empty<CodeNode>(), "missing");
+
+        Assert.Empty(children);
+    }
+
+    [Fact]
     public void GetUsages_FiltersToReferencesEdgesOnly()
     {
         var target = MakeNode("AuthService", "AuthService", NodeKind.Class);

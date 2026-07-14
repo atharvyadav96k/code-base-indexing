@@ -10,5 +10,5 @@ public static class BinaryIndexFormat
     /// Format version. Bump this whenever the on-disk schema changes; a reader
     /// seeing a mismatched version must rebuild rather than attempt to misread.
     /// </summary>
-    public const int CurrentVersion = 1;
+    public const int CurrentVersion = 2;
 }

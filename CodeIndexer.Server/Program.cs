@@ -13,9 +13,17 @@ using CodeIndexer.Storage;
 // Composition root: this is the only place a concrete parser is referenced.
 IReadOnlyList<ICodeParser> parsers = new ICodeParser[] { new CSharpParser(), new JavaScriptParser(), new TypeScriptParser() };
 
-var command = args.Length > 0 ? args[0] : "help";
-var arg1 = args.Length > 1 ? args[1] : null;
+var flags = args.Where(a => a.StartsWith("--", StringComparison.Ordinal)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+var positionalArgs = args.Where(a => !a.StartsWith("--", StringComparison.Ordinal)).ToArray();
+var command = positionalArgs.Length > 0 ? positionalArgs[0] : "help";
+var arg1 = positionalArgs.Length > 1 ? positionalArgs[1] : null;
 var workingDirectory = Directory.GetCurrentDirectory();
+
+// Import/Field hits are usually reference-site noise, not the declaration being
+// looked for — hide them by default so 'search' doesn't require --kind every time.
+var defaultSearchKinds = Enum.GetValues<CodeIndexer.Core.Nodes.NodeKind>()
+    .Where(k => k is not (CodeIndexer.Core.Nodes.NodeKind.Import or CodeIndexer.Core.Nodes.NodeKind.Field))
+    .ToArray();
 
 switch (command)
 {
@@ -24,7 +32,7 @@ switch (command)
         break;
 
     case "search":
-        RunSearch(arg1 ?? string.Empty);
+        RunSearch(arg1 ?? string.Empty, flags.Contains("--all"));
         break;
 
     case "get-code":
@@ -45,6 +53,10 @@ switch (command)
 
     case "locate":
         RunLocate(arg1 ?? string.Empty);
+        break;
+
+    case "children":
+        RunChildren(arg1 ?? string.Empty);
         break;
 
     case "refs":
@@ -223,14 +235,20 @@ bool TryLoadSessionNodes(out IReadOnlyList<CodeIndexer.Core.Nodes.CodeNode> node
     return true;
 }
 
-void RunSearch(string pattern)
+void RunSearch(string pattern, bool includeAll)
 {
     if (!TryLoadSessionNodes(out var nodes))
     {
         return;
     }
 
-    var hits = new NodeSearchEngine().Search(nodes, new SearchQuery { NamePattern = pattern, MaxResults = 25 });
+    var query = new SearchQuery
+    {
+        NamePattern = pattern,
+        MaxResults = 25,
+        Kinds = includeAll ? null : defaultSearchKinds,
+    };
+    var hits = new NodeSearchEngine().Search(nodes, query);
     foreach (var hit in hits)
     {
         var lang = LanguageOf(hit.Location.FilePath);
@@ -362,6 +380,48 @@ void PrintNodeList(IReadOnlyList<CodeIndexer.Core.Nodes.CodeNode> matches)
     }
 }
 
+// A relationship command returning zero matches can mean either "genuinely no
+// relationship" or "RelationshipResolver found >1 same-named candidate and
+// declined to guess" — these look identical to the caller unless surfaced.
+// SkippedRelationships notes are name-text matches, not exact edges, so this
+// is a diagnostic hint, not a guarantee the skip really concerns this node.
+void PrintRelationshipResult(IReadOnlyList<CodeIndexer.Core.Nodes.CodeNode> matches, IReadOnlyList<CodeIndexer.Core.Nodes.CodeNode> allNodes, CodeIndexer.Core.Nodes.CodeNode target)
+{
+    if (matches.Count > 0)
+    {
+        PrintNodeList(matches);
+        return;
+    }
+
+    var skips = allNodes
+        .SelectMany(n => n.SkippedRelationships)
+        .Where(note => note.Contains($"'{target.Name}'", StringComparison.Ordinal))
+        .Distinct()
+        .ToArray();
+
+    if (skips.Length == 0)
+    {
+        Console.WriteLine("(none found)");
+        return;
+    }
+
+    Console.WriteLine($"(none found — but {skips.Length} ambiguous resolution(s) elsewhere in the project may involve '{target.Name}', not asserted as edges)");
+    foreach (var skip in skips)
+    {
+        Console.WriteLine($"  skipped: {skip}");
+    }
+}
+
+void RunChildren(string nodeId)
+{
+    if (!TryLoadSessionNodes(out var nodes))
+    {
+        return;
+    }
+
+    PrintNodeList(new ReferenceFinder().GetChildren(nodes, nodeId));
+}
+
 void RunRefs(string nodeId)
 {
     if (!TryLoadSessionNodes(out var nodes))
@@ -369,32 +429,59 @@ void RunRefs(string nodeId)
         return;
     }
 
-    var hits = new ReferenceFinder().FindReferences(nodes, nodeId);
-    if (hits.Count == 0)
+    var target = nodes.FirstOrDefault(n => n.Id == nodeId);
+    if (target is null)
     {
-        Console.WriteLine("(no references found)");
+        Console.WriteLine("(node not found)");
         return;
     }
 
-    foreach (var hit in hits)
+    var hits = new ReferenceFinder().FindReferences(nodes, nodeId);
+    if (hits.Count > 0)
     {
-        Console.WriteLine($"{hit.Source.Id}  {hit.Kind,-10} {hit.Source.QualifiedName}  ({hit.Source.Location.FilePath}:{hit.Source.Location.StartLine})");
+        foreach (var hit in hits)
+        {
+            Console.WriteLine($"{hit.Source.Id}  {hit.Kind,-10} {hit.Source.QualifiedName}  ({hit.Source.Location.FilePath}:{hit.Source.Location.StartLine})");
+        }
+
+        return;
     }
+
+    PrintRelationshipResult(Array.Empty<CodeIndexer.Core.Nodes.CodeNode>(), nodes, target);
+}
+
+bool TryRequireKind(IReadOnlyList<CodeIndexer.Core.Nodes.CodeNode> nodes, string nodeId, string commandName, out CodeIndexer.Core.Nodes.CodeNode? node, params CodeIndexer.Core.Nodes.NodeKind[] allowedKinds)
+{
+    node = nodes.FirstOrDefault(n => n.Id == nodeId);
+    if (node is null)
+    {
+        Console.WriteLine("(node not found)");
+        return false;
+    }
+
+    var error = NodeKindGuard.Validate(node, commandName, allowedKinds);
+    if (error is not null)
+    {
+        Console.WriteLine(error);
+        return false;
+    }
+
+    return true;
 }
 
 void RunCallers(string nodeId)
 {
-    if (!TryLoadSessionNodes(out var nodes))
+    if (!TryLoadSessionNodes(out var nodes) || !TryRequireKind(nodes, nodeId, "callers", out var target, CodeIndexer.Core.Nodes.NodeKind.Method))
     {
         return;
     }
 
-    PrintNodeList(new ReferenceFinder().GetCallers(nodes, nodeId));
+    PrintRelationshipResult(new ReferenceFinder().GetCallers(nodes, nodeId), nodes, target!);
 }
 
 void RunCallees(string nodeId)
 {
-    if (!TryLoadSessionNodes(out var nodes))
+    if (!TryLoadSessionNodes(out var nodes) || !TryRequireKind(nodes, nodeId, "callees", out _, CodeIndexer.Core.Nodes.NodeKind.Method))
     {
         return;
     }
@@ -404,22 +491,22 @@ void RunCallees(string nodeId)
 
 void RunSubtypes(string nodeId)
 {
-    if (!TryLoadSessionNodes(out var nodes))
+    if (!TryLoadSessionNodes(out var nodes) || !TryRequireKind(nodes, nodeId, "subtypes", out var target, CodeIndexer.Core.Nodes.NodeKind.Class, CodeIndexer.Core.Nodes.NodeKind.Interface, CodeIndexer.Core.Nodes.NodeKind.Struct))
     {
         return;
     }
 
-    PrintNodeList(new ReferenceFinder().GetSubtypes(nodes, nodeId));
+    PrintRelationshipResult(new ReferenceFinder().GetSubtypes(nodes, nodeId), nodes, target!);
 }
 
 void RunUsages(string nodeId)
 {
-    if (!TryLoadSessionNodes(out var nodes))
+    if (!TryLoadSessionNodes(out var nodes) || !TryRequireKind(nodes, nodeId, "usages", out var target, CodeIndexer.Core.Nodes.NodeKind.Class, CodeIndexer.Core.Nodes.NodeKind.Interface, CodeIndexer.Core.Nodes.NodeKind.Struct, CodeIndexer.Core.Nodes.NodeKind.Enum))
     {
         return;
     }
 
-    PrintNodeList(new ReferenceFinder().GetUsages(nodes, nodeId));
+    PrintRelationshipResult(new ReferenceFinder().GetUsages(nodes, nodeId), nodes, target!);
 }
 
 void PrintHelp()
@@ -427,12 +514,13 @@ void PrintHelp()
     Console.WriteLine("""
         CodeIndexer — usage:
           index [path]         Full re-index of the session rooted at path (default: cwd)
-          search <pattern>     Search node names, ranked (prints id + name only)
+          search <pattern>     Search node names, ranked (hides Import/Field by default; add --all to include them)
           info <nodeId>        Print kind, path, signature, and doc comment for a node by ID
           get-code <nodeId>    Print the full body of a node by ID
           tree                 Print the directory tree of indexed files
           outline               Print the namespace/scope outline
           locate <fragment>    Find files by name or path fragment
+          children <nodeId>    List direct members (methods/fields/nested types) declared inside this node
           refs <nodeId>        Find every node that references this one (any edge kind)
           callers <nodeId>     Find nodes that call this one
           callees <nodeId>     Find nodes this one calls

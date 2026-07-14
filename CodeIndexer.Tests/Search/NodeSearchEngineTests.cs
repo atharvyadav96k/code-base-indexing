@@ -116,6 +116,39 @@ public class NodeSearchEngineTests
     }
 
     [Fact]
+    public void Search_DefaultKindSetExcludingImportAndField_HidesReferenceNoise()
+    {
+        // Mirrors the CLI's default 'search' behavior: everything except Import/Field.
+        var defaultKinds = Enum.GetValues<NodeKind>().Where(k => k is not (NodeKind.Import or NodeKind.Field)).ToArray();
+        var nodes = new[]
+        {
+            MakeNode("Auth", NodeKind.Class),
+            MakeNode("Auth", NodeKind.Import),
+            MakeNode("Auth", NodeKind.Field),
+        };
+
+        var hits = new NodeSearchEngine().Search(nodes, new SearchQuery { NamePattern = "Auth", Kinds = defaultKinds });
+
+        var hit = Assert.Single(hits);
+        Assert.Equal(NodeKind.Class, hit.Kind);
+    }
+
+    [Fact]
+    public void Search_NoKindsFilter_IncludesImportAndField()
+    {
+        var nodes = new[]
+        {
+            MakeNode("Auth", NodeKind.Class),
+            MakeNode("Auth", NodeKind.Import),
+            MakeNode("Auth", NodeKind.Field),
+        };
+
+        var hits = new NodeSearchEngine().Search(nodes, new SearchQuery { NamePattern = "Auth" });
+
+        Assert.Equal(3, hits.Count);
+    }
+
+    [Fact]
     public void GetCode_KnownId_ReturnsBodyAndHash()
     {
         var node = MakeNode("Foo");

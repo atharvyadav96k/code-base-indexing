@@ -1,9 +1,8 @@
 namespace CodeIndexer.Core.Nodes;
 
 /// <summary>
-/// The fixed taxonomy of relationships between nodes (Phase 7). Declared now so
-/// the node model's shape is stable from Phase 0 onward, even though no parser
-/// populates edges until relationship extraction ships.
+/// The fixed taxonomy of relationships between nodes, resolved by a
+/// post-processing pass over the whole node set after every file is parsed.
 /// </summary>
 public enum EdgeKind
 {

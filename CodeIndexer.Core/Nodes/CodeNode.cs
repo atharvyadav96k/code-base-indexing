@@ -40,6 +40,14 @@ public sealed record CodeNode
     /// <summary>Content hash of <see cref="Body"/>, used for staleness detection on retrieval.</summary>
     public required string ContentHash { get; init; }
 
-    /// <summary>Relationships to other nodes. Empty until Phase 7 populates them.</summary>
+    /// <summary>Relationships to other nodes, populated by a post-processing pass over the whole node set after parsing.</summary>
     public IReadOnlyList<NodeEdge> Edges { get; init; } = Array.Empty<NodeEdge>();
+
+    /// <summary>
+    /// Human-readable notes for relationship resolutions dropped due to name
+    /// ambiguity (as opposed to zero candidates, which is expected/unresolved
+    /// and stays silent) — lets callers distinguish "no relationship" from
+    /// "skipped, ambiguous" without asserting a guess.
+    /// </summary>
+    public IReadOnlyList<string> SkippedRelationships { get; init; } = Array.Empty<string>();
 }

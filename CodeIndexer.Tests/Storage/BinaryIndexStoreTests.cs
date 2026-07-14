@@ -36,6 +36,7 @@ public class BinaryIndexStoreTests : IDisposable
         Metadata = new NodeMetadata { IsPublic = true, Extra = new Dictionary<string, string> { ["lang"] = "csharp" } },
         ContentHash = ContentHasher.Hash($"public class {name} {{ }}"),
         Edges = new[] { new NodeEdge { Kind = EdgeKind.Contains, TargetNodeId = "parent-id" } },
+        SkippedRelationships = new[] { "call to 'Save' skipped: 2 ambiguous candidates (a @ A.cs, b @ B.cs)" },
     };
 
     [Fact]
@@ -58,6 +59,7 @@ public class BinaryIndexStoreTests : IDisposable
         Assert.Single(read.Edges);
         Assert.Equal(node.Edges[0].TargetNodeId, read.Edges[0].TargetNodeId);
         Assert.Equal(node.ContentHash, read.ContentHash);
+        Assert.Equal(node.SkippedRelationships, read.SkippedRelationships);
     }
 
     [Fact]

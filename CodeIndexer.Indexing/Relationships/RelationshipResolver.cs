@@ -49,19 +49,27 @@ public static class RelationshipResolver
         // the same file was somehow discovered twice) — last-write-wins here,
         // same as everywhere else nodes are keyed by ID.
         var edgesByNodeId = new Dictionary<string, List<NodeEdge>>();
+        var skipsByNodeId = new Dictionary<string, List<string>>();
         foreach (var node in nodes)
         {
             edgesByNodeId[node.Id] = new List<NodeEdge>();
+            skipsByNodeId[node.Id] = new List<string>();
         }
 
         ResolveContainment(nodes, edgesByNodeId);
-        ResolveInheritance(nodes, edgesByNodeId);
-        ResolveCalls(nodes, edgesByNodeId);
+        ResolveInheritance(nodes, edgesByNodeId, skipsByNodeId);
+        ResolveCalls(nodes, edgesByNodeId, skipsByNodeId);
         ResolveImports(nodes, edgesByNodeId);
-        ResolveTypeUsages(nodes, edgesByNodeId);
+        ResolveTypeUsages(nodes, edgesByNodeId, skipsByNodeId);
 
-        return nodes.Select(n => n with { Edges = edgesByNodeId[n.Id] }).ToArray();
+        return nodes.Select(n => n with { Edges = edgesByNodeId[n.Id], SkippedRelationships = skipsByNodeId[n.Id] }).ToArray();
     }
+
+    /// <summary>Describes an ambiguous candidate for a diagnostic skip note (not a real edge — the resolver isn't confident enough to assert one).</summary>
+    private static string DescribeCandidate(CodeNode candidate) => $"{candidate.Id} @ {candidate.Location.FilePath}";
+
+    private static string BuildAmbiguityNote(string relationshipDescription, string simpleName, IReadOnlyList<CodeNode> candidates) =>
+        $"{relationshipDescription} '{simpleName}' skipped: {candidates.Count} ambiguous candidates ({string.Join(", ", candidates.Select(DescribeCandidate))})";
 
     private static void ResolveContainment(IReadOnlyList<CodeNode> nodes, Dictionary<string, List<NodeEdge>> edgesByNodeId)
     {
@@ -97,7 +105,7 @@ public static class RelationshipResolver
         }
     }
 
-    private static void ResolveInheritance(IReadOnlyList<CodeNode> nodes, Dictionary<string, List<NodeEdge>> edgesByNodeId)
+    private static void ResolveInheritance(IReadOnlyList<CodeNode> nodes, Dictionary<string, List<NodeEdge>> edgesByNodeId, Dictionary<string, List<string>> skipsByNodeId)
     {
         var typeNodesByName = nodes
             .Where(n => n.Kind is NodeKind.Class or NodeKind.Interface or NodeKind.Struct)
@@ -119,6 +127,11 @@ public static class RelationshipResolver
             {
                 var simpleName = SimplifyTypeName(rawName);
                 var candidates = typeNodesByName[simpleName].Where(c => c.Id != node.Id).ToArray();
+                if (candidates.Length > 1)
+                {
+                    skipsByNodeId[node.Id].Add(BuildAmbiguityNote("inheritance from", simpleName, candidates));
+                }
+
                 if (candidates.Length != 1)
                 {
                     continue;
@@ -131,7 +144,7 @@ public static class RelationshipResolver
         }
     }
 
-    private static void ResolveCalls(IReadOnlyList<CodeNode> nodes, Dictionary<string, List<NodeEdge>> edgesByNodeId)
+    private static void ResolveCalls(IReadOnlyList<CodeNode> nodes, Dictionary<string, List<NodeEdge>> edgesByNodeId, Dictionary<string, List<string>> skipsByNodeId)
     {
         var methodsByName = nodes.Where(n => n.Kind == NodeKind.Method).ToLookup(n => n.Name);
 
@@ -143,6 +156,7 @@ public static class RelationshipResolver
             }
 
             var seenTargets = new HashSet<string>();
+            var seenAmbiguousNames = new HashSet<string>();
             foreach (Match match in CallPattern.Matches(node.Body))
             {
                 var calleeName = match.Groups[1].Value;
@@ -152,6 +166,11 @@ public static class RelationshipResolver
                 }
 
                 var candidates = methodsByName[calleeName].Where(c => c.Id != node.Id).ToArray();
+                if (candidates.Length > 1 && seenAmbiguousNames.Add(calleeName))
+                {
+                    skipsByNodeId[node.Id].Add(BuildAmbiguityNote("call to", calleeName, candidates));
+                }
+
                 if (candidates.Length != 1)
                 {
                     continue;
@@ -192,7 +211,7 @@ public static class RelationshipResolver
     /// inheritance relationship, most commonly constructor-injected
     /// dependencies (e.g. "constructor(private authService: AuthService)").
     /// </summary>
-    private static void ResolveTypeUsages(IReadOnlyList<CodeNode> nodes, Dictionary<string, List<NodeEdge>> edgesByNodeId)
+    private static void ResolveTypeUsages(IReadOnlyList<CodeNode> nodes, Dictionary<string, List<NodeEdge>> edgesByNodeId, Dictionary<string, List<string>> skipsByNodeId)
     {
         var typeNodesByName = nodes
             .Where(n => n.Kind is NodeKind.Class or NodeKind.Interface or NodeKind.Struct)
@@ -209,11 +228,17 @@ public static class RelationshipResolver
             };
 
             var seenTargets = new HashSet<string>();
+            var seenAmbiguousNames = new HashSet<string>();
             foreach (var typeText in typeTexts)
             {
                 foreach (var candidateName in ExtractCandidateTypeNames(typeText))
                 {
                     var candidates = typeNodesByName[candidateName].Where(c => c.Id != node.Id).ToArray();
+                    if (candidates.Length > 1 && seenAmbiguousNames.Add(candidateName))
+                    {
+                        skipsByNodeId[node.Id].Add(BuildAmbiguityNote("type usage of", candidateName, candidates));
+                    }
+
                     if (candidates.Length != 1)
                     {
                         continue;

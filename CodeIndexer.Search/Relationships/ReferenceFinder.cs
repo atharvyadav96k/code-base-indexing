@@ -54,6 +54,24 @@ public sealed class ReferenceFinder
             .ToArray();
     }
 
+    /// <summary>Direct members (methods, fields, nested types, ...) declared inside <paramref name="containerNodeId"/> — its resolved outgoing Contains edges.</summary>
+    public IReadOnlyList<CodeNode> GetChildren(IReadOnlyList<CodeNode> allNodes, string containerNodeId)
+    {
+        var container = allNodes.FirstOrDefault(n => n.Id == containerNodeId);
+        if (container is null)
+        {
+            return Array.Empty<CodeNode>();
+        }
+
+        var byId = allNodes.GroupBy(n => n.Id).ToDictionary(g => g.Key, g => g.First());
+        return container.Edges
+            .Where(e => e.Kind == EdgeKind.Contains)
+            .Select(e => byId.GetValueOrDefault(e.TargetNodeId))
+            .Where(n => n is not null)
+            .Select(n => n!)
+            .ToArray();
+    }
+
     /// <summary>Types that inherit from or implement <paramref name="targetNodeId"/>.</summary>
     public IReadOnlyList<CodeNode> GetSubtypes(IReadOnlyList<CodeNode> allNodes, string targetNodeId) =>
         FindReferences(allNodes, targetNodeId)

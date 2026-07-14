@@ -124,11 +124,14 @@ public class RelationshipResolverTests
 
         var resolvedDerived = resolved.Single(n => n.Id == derived.Id);
         Assert.DoesNotContain(resolvedDerived.Edges, e => e.Kind is EdgeKind.Inherits or EdgeKind.Implements);
+        Assert.Contains(resolvedDerived.SkippedRelationships, note => note.Contains("'Handler'"));
     }
 
     [Fact]
-    public void Resolve_UnresolvableExternalBaseType_ProducesNoEdge()
+    public void Resolve_UnresolvableExternalBaseType_ProducesNoEdgeAndNoSkipNote()
     {
+        // Zero candidates (unresolved/external) is expected and distinct from
+        // ambiguity (>1 candidates) — it must stay silent, not produce a note.
         var metadata = new NodeMetadata().WithBaseTypes(new[] { "System.IDisposable" });
         var cls = MakeNode("Resource", "App.Resource", NodeKind.Class, metadata: metadata);
 
@@ -136,6 +139,7 @@ public class RelationshipResolverTests
 
         var resolvedCls = resolved.Single();
         Assert.Empty(resolvedCls.Edges);
+        Assert.Empty(resolvedCls.SkippedRelationships);
     }
 
     [Fact]
@@ -161,6 +165,7 @@ public class RelationshipResolverTests
 
         var resolvedCaller = resolved.Single(n => n.Id == caller.Id);
         Assert.DoesNotContain(resolvedCaller.Edges, e => e.Kind == EdgeKind.Calls);
+        Assert.Contains(resolvedCaller.SkippedRelationships, note => note.Contains("'Save'"));
     }
 
     [Fact]
@@ -257,5 +262,6 @@ public class RelationshipResolverTests
 
         var resolvedMethod = resolved.Single(n => n.Id == method.Id);
         Assert.DoesNotContain(resolvedMethod.Edges, e => e.Kind == EdgeKind.References);
+        Assert.Contains(resolvedMethod.SkippedRelationships, note => note.Contains("'Handler'"));
     }
 }
