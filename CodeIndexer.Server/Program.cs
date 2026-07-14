@@ -462,6 +462,9 @@ void RunLocate(string fragment)
     }
 }
 
+// Unlike 'children', these results can span multiple files, so the path can't
+// just be dropped — but it's still redundant to repeat it on every line when
+// several hits share a file, so print each file path once as a group header.
 void PrintNodeList(IReadOnlyList<CodeIndexer.Core.Nodes.CodeNode> matches)
 {
     if (matches.Count == 0)
@@ -470,9 +473,13 @@ void PrintNodeList(IReadOnlyList<CodeIndexer.Core.Nodes.CodeNode> matches)
         return;
     }
 
-    foreach (var node in matches)
+    foreach (var group in matches.GroupBy(n => n.Location.FilePath).OrderBy(g => g.Key, StringComparer.OrdinalIgnoreCase))
     {
-        Console.WriteLine($"{node.Id}  {node.Kind,-10} {node.QualifiedName}  ({node.Location.FilePath}:{node.Location.StartLine})");
+        Console.WriteLine(group.Key);
+        foreach (var node in group.OrderBy(n => n.Location.StartLine))
+        {
+            Console.WriteLine($"  {node.Id}  {node.Kind,-10} {node.QualifiedName}  (line {node.Location.StartLine})");
+        }
     }
 }
 
@@ -552,15 +559,23 @@ void RunRefs(string nodeId)
     var hits = new ReferenceFinder().FindReferences(nodes, nodeId);
     if (hits.Count > 0)
     {
-        foreach (var hit in hits)
-        {
-            Console.WriteLine($"{hit.Source.Id}  {hit.Kind,-10} {hit.Source.QualifiedName}  ({hit.Source.Location.FilePath}:{hit.Source.Location.StartLine})");
-        }
-
+        PrintReferenceHits(hits);
         return;
     }
 
     PrintRelationshipResult(Array.Empty<CodeIndexer.Core.Nodes.CodeNode>(), nodes, target);
+}
+
+void PrintReferenceHits(IReadOnlyList<ReferenceHit> hits)
+{
+    foreach (var group in hits.GroupBy(h => h.Source.Location.FilePath).OrderBy(g => g.Key, StringComparer.OrdinalIgnoreCase))
+    {
+        Console.WriteLine(group.Key);
+        foreach (var hit in group.OrderBy(h => h.Source.Location.StartLine))
+        {
+            Console.WriteLine($"  {hit.Source.Id}  {hit.Kind,-10} {hit.Source.QualifiedName}  (line {hit.Source.Location.StartLine})");
+        }
+    }
 }
 
 bool TryRequireKind(IReadOnlyList<CodeIndexer.Core.Nodes.CodeNode> nodes, string nodeId, string commandName, out CodeIndexer.Core.Nodes.CodeNode? node, params CodeIndexer.Core.Nodes.NodeKind[] allowedKinds)

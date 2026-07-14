@@ -42,6 +42,15 @@ They resolve their session from the current directory (walking up to find `.code
 | `callees` | nodeId | Methods this method calls. Same `Method`-only restriction as `callers`. |
 | `subtypes` | nodeId | Types that `extends`/`implements` this one. Only valid on a `Class`/`Interface`/`Struct` node. |
 | `usages` | nodeId | Parameters/fields/properties typed as this one — e.g. constructor dependency injection. Only valid on a `Class`/`Interface`/`Struct`/`Enum` node. |
+
+`refs`/`callers`/`callees`/`subtypes`/`usages` results can legitimately span multiple files (unlike `children`, which is always single-file), so the path isn't dropped — but it's printed once as a group header per file rather than repeated on every row:
+```
+C:\path\AuthService.cs
+  <id>  Method  ...GetUserRoleNameAsync  (line 582)
+  <id>  Method  ...BuildAccessClaims     (line 572)
+C:\path\OtherFile.cs
+  <id>  Method  ...SomeOtherCaller       (line 12)
+```
 | `update` | — | Incremental re-index: only re-parses changed/added files, drops deleted ones. Much faster than `index` after small edits. |
 | `verify` | — | Reports which files are stale vs. the index, without changing anything. |
 | `install-hooks` | — | Installs git hooks (post-commit/post-merge/post-checkout) that run `update` automatically in the background. |
