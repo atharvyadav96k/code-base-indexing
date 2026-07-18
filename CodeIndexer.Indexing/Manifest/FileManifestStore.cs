@@ -9,11 +9,19 @@ public static class FileManifestStore
 
     public static void Write(string manifestFilePath, FileManifest manifest)
     {
-        var json = JsonSerializer.Serialize(manifest.FileHashes, Options);
+        var json = JsonSerializer.Serialize(manifest, Options);
         File.WriteAllText(manifestFilePath, json);
     }
 
-    /// <summary>Returns <see cref="FileManifest.Empty"/> if no manifest exists yet (first run, or pre-Phase-9 index).</summary>
+    /// <summary>
+    /// Returns <see cref="FileManifest.Empty"/> if no manifest exists yet, if it
+    /// predates the current schema (e.g. the old bare path-&gt;hash dictionary
+    /// shape), or if its <see cref="FileManifest.FormatVersion"/> doesn't match
+    /// <see cref="FileManifest.CurrentFormatVersion"/> (e.g. a shard format
+    /// change, like switching Kind fields from strings to ints) — in every
+    /// case the caller falls back to a full rebuild rather than trusting
+    /// shards it can no longer parse correctly.
+    /// </summary>
     public static FileManifest Read(string manifestFilePath)
     {
         if (!File.Exists(manifestFilePath))
@@ -21,8 +29,15 @@ public static class FileManifestStore
             return FileManifest.Empty;
         }
 
-        var json = File.ReadAllText(manifestFilePath);
-        var hashes = JsonSerializer.Deserialize<Dictionary<string, string>>(json, Options);
-        return new FileManifest { FileHashes = hashes ?? new Dictionary<string, string>() };
+        try
+        {
+            var json = File.ReadAllText(manifestFilePath);
+            var manifest = JsonSerializer.Deserialize<FileManifest>(json, Options);
+            return manifest is { FileHashes: not null, FormatVersion: FileManifest.CurrentFormatVersion } ? manifest : FileManifest.Empty;
+        }
+        catch (JsonException)
+        {
+            return FileManifest.Empty;
+        }
     }
 }

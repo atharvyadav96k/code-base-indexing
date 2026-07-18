@@ -4,6 +4,5 @@ public enum IndexReadStatus
 {
     Success,
     NotFound,
-    VersionMismatch,
     Corrupted,
 }

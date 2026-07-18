@@ -1,5 +1,6 @@
 using CodeIndexer.Core.Nodes;
 using CodeIndexer.Search.Internal;
+using CodeIndexer.Storage.Json;
 
 namespace CodeIndexer.Search;
 
@@ -36,6 +37,38 @@ public sealed class NodeSearchEngine
             .Select(s => NodeSearchHit.FromNode(s.Node, s.Score));
 
         return (query.MaxResults is { } max ? ranked.Take(max) : ranked).ToArray();
+    }
+
+    /// <summary>
+    /// Ranks search-index.json entries directly — the fast path for the
+    /// 'search' command, which never needs to load any file's full shard.
+    /// </summary>
+    public IReadOnlyList<FileEntryDto> SearchEntries(IReadOnlyList<FileEntryDto> entries, string? namePattern, IReadOnlyCollection<NodeKind>? kinds, int? maxResults)
+    {
+        var scored = new List<(FileEntryDto Entry, int Score)>();
+
+        foreach (var entry in entries)
+        {
+            if (kinds is { Count: > 0 } && !kinds.Contains((NodeKind)entry.Kind))
+            {
+                continue;
+            }
+
+            var score = namePattern is null ? 1 : NameMatcher.Score(entry.Name, namePattern);
+            if (score <= 0)
+            {
+                continue;
+            }
+
+            scored.Add((entry, score));
+        }
+
+        var ranked = scored
+            .OrderByDescending(s => s.Score)
+            .ThenBy(s => s.Entry.Name, StringComparer.OrdinalIgnoreCase)
+            .Select(s => s.Entry);
+
+        return (maxResults is { } max ? ranked.Take(max) : ranked).ToArray();
     }
 
     private static bool PassesFilters(CodeNode node, SearchQuery query)

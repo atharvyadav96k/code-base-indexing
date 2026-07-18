@@ -1,6 +1,7 @@
 using CodeIndexer.Core.Parsing;
 using CodeIndexer.Indexing;
 using CodeIndexer.Indexing.GitHooks;
+using CodeIndexer.Indexing.Manifest;
 using CodeIndexer.Indexing.Sessions;
 using CodeIndexer.Parsing.CSharp;
 using CodeIndexer.Parsing.JavaScript;
@@ -9,9 +10,12 @@ using CodeIndexer.Search;
 using CodeIndexer.Search.Relationships;
 using CodeIndexer.Search.Structure;
 using CodeIndexer.Storage;
+using CodeIndexer.Storage.Json;
 
-// Composition root: this is the only place a concrete parser is referenced.
+// Composition root: this is the only place a concrete parser (or the concrete
+// storage implementation) is referenced.
 IReadOnlyList<ICodeParser> parsers = new ICodeParser[] { new CSharpParser(), new JavaScriptParser(), new TypeScriptParser() };
+IIndexStore indexStore = new JsonIndexStore();
 
 // Flags that take a value (e.g. --depth 2) must be named explicitly here —
 // everything else starting with "--" is treated as a standalone boolean flag,
@@ -126,7 +130,7 @@ async Task RunIndexAsync(string directory)
     var sessionManager = new SessionManager(new SessionRegistry());
     var session = sessionManager.EnsureSession(directory);
 
-    var orchestrator = new IndexOrchestrator(parsers);
+    var orchestrator = new IndexOrchestrator(parsers, indexStore);
     var result = await orchestrator.RunFullIndexAsync(session, CancellationToken.None);
 
     Console.WriteLine($"Indexed {result.NodesIndexed} nodes from {result.FilesDiscovered} files at {session.RootPath}");
@@ -150,7 +154,7 @@ async Task RunUpdateAsync()
         return;
     }
 
-    var orchestrator = new IndexOrchestrator(parsers);
+    var orchestrator = new IndexOrchestrator(parsers, indexStore);
     var result = await orchestrator.RunIncrementalIndexAsync(resolution.Session!, CancellationToken.None);
 
     if (result.FellBackToFullIndex)
@@ -183,7 +187,7 @@ void RunVerify()
         return;
     }
 
-    var orchestrator = new IndexOrchestrator(parsers);
+    var orchestrator = new IndexOrchestrator(parsers, indexStore);
     var drift = orchestrator.DetectDrift(resolution.Session!);
 
     if (drift.IsClean)
@@ -238,9 +242,9 @@ void RunInstallHooks()
     Console.WriteLine($"Installed hooks in {result.HooksDirectory}: {string.Join(", ", result.InstalledHookNames)}");
 }
 
-bool TryLoadSessionNodes(out IReadOnlyList<CodeIndexer.Core.Nodes.CodeNode> nodes)
+bool TryResolveSession(out Session session)
 {
-    nodes = Array.Empty<CodeIndexer.Core.Nodes.CodeNode>();
+    session = null!;
     var sessionManager = new SessionManager(new SessionRegistry());
     var resolution = sessionManager.TryResolve(workingDirectory);
     if (!resolution.Found)
@@ -249,34 +253,107 @@ bool TryLoadSessionNodes(out IReadOnlyList<CodeIndexer.Core.Nodes.CodeNode> node
         return false;
     }
 
-    var readResult = new BinaryIndexStore().Read(resolution.Session!.IndexFilePath);
-    if (!readResult.Success)
+    session = resolution.Session!;
+    return true;
+}
+
+/// <summary>Every file the index currently knows about, from manifest.json — no node data loaded.</summary>
+IReadOnlyList<string> AllManifestFiles(Session session) =>
+    FileManifestStore.Read(session.ManifestFilePath).FileHashes.Keys.ToArray();
+
+bool TryLoadSearchIndex(Session session, out IReadOnlyList<FileEntryDto> entries)
+{
+    entries = Array.Empty<FileEntryDto>();
+    var result = indexStore.ReadSearchIndex(session.MarkerDirectoryPath);
+    if (!result.Success)
     {
-        Console.WriteLine($"Index unreadable ({readResult.Status}): {readResult.Detail}. Run 'index' again to rebuild.");
+        Console.WriteLine($"Search index unreadable ({result.Status}): {result.Detail}. Run 'index' again to rebuild.");
         return false;
     }
 
-    nodes = readResult.Nodes;
+    entries = result.Entries;
     return true;
+}
+
+/// <summary>Resolves a node ID to the file that defines it via search-index.json, without loading any shard.</summary>
+bool TryResolveNodeFile(Session session, string nodeId, out string filePath)
+{
+    filePath = string.Empty;
+    if (!TryLoadSearchIndex(session, out var entries))
+    {
+        return false;
+    }
+
+    var entry = entries.FirstOrDefault(e => e.Id == nodeId);
+    if (entry is null)
+    {
+        return false;
+    }
+
+    filePath = entry.FilePath;
+    return true;
+}
+
+/// <summary>Resolves node IDs to their defining files via search-index.json.</summary>
+IReadOnlyList<string> ResolveFilesForIds(Session session, IReadOnlyCollection<string> nodeIds)
+{
+    if (nodeIds.Count == 0 || !TryLoadSearchIndex(session, out var entries))
+    {
+        return Array.Empty<string>();
+    }
+
+    return entries.Where(e => nodeIds.Contains(e.Id)).Select(e => e.FilePath).Distinct().ToArray();
+}
+
+/// <summary>Loads <paramref name="primaryFilePath"/>'s shard plus any of <paramref name="extraFilePaths"/> not already covered.</summary>
+IReadOnlyList<CodeIndexer.Core.Nodes.CodeNode> LoadNodesForRelationshipQuery(Session session, string primaryFilePath, IReadOnlyList<string> extraFilePaths)
+{
+    var files = new List<string> { primaryFilePath };
+    files.AddRange(extraFilePaths.Where(f => !string.Equals(f, primaryFilePath, StringComparison.OrdinalIgnoreCase)));
+    return indexStore.ReadFiles(session.MarkerDirectoryPath, files).Nodes;
+}
+
+/// <summary>
+/// Full-graph load, used only for outline (which genuinely needs every node)
+/// and as the lazy fallback for relationship-diagnostic messages when a
+/// relations-only scan came back empty and the ambiguity note it should
+/// explain could live on any node in the project.
+/// </summary>
+IReadOnlyList<CodeIndexer.Core.Nodes.CodeNode> LoadAllNodesOrEmpty(Session session)
+{
+    var result = indexStore.ReadFiles(session.MarkerDirectoryPath, AllManifestFiles(session));
+    if (!result.Success)
+    {
+        Console.WriteLine($"Index unreadable ({result.Status}): {result.Detail}. Run 'index' again to rebuild.");
+        return Array.Empty<CodeIndexer.Core.Nodes.CodeNode>();
+    }
+
+    return result.Nodes;
+}
+
+/// <summary>Missing edge targets of <paramref name="kind"/> not already present in <paramref name="alreadyLoaded"/>, resolved to their files.</summary>
+IReadOnlyList<string> ResolveMissingTargetFiles(Session session, CodeIndexer.Core.Nodes.CodeNode source, CodeIndexer.Core.Nodes.EdgeKind kind, IReadOnlyList<CodeIndexer.Core.Nodes.CodeNode> alreadyLoaded)
+{
+    var loadedIds = new HashSet<string>(alreadyLoaded.Select(n => n.Id));
+    var missingIds = source.Edges
+        .Where(e => e.Kind == kind && !loadedIds.Contains(e.TargetNodeId))
+        .Select(e => e.TargetNodeId)
+        .ToHashSet();
+
+    return ResolveFilesForIds(session, missingIds);
 }
 
 void RunSearch(string pattern, bool includeAll)
 {
-    if (!TryLoadSessionNodes(out var nodes))
+    if (!TryResolveSession(out var session) || !TryLoadSearchIndex(session, out var entries))
     {
         return;
     }
 
-    var query = new SearchQuery
-    {
-        NamePattern = pattern,
-        MaxResults = 25,
-        Kinds = includeAll ? null : defaultSearchKinds,
-    };
-    var hits = new NodeSearchEngine().Search(nodes, query);
+    var hits = new NodeSearchEngine().SearchEntries(entries, pattern, includeAll ? null : defaultSearchKinds, 25);
     foreach (var hit in hits)
     {
-        var lang = LanguageOf(hit.Location.FilePath);
+        var lang = LanguageOf(hit.FilePath);
         Console.WriteLine($"{hit.Id}  [{lang}]{new string(' ', Math.Max(1, 5 - lang.Length))}{hit.Kind,-10} {hit.Name}");
     }
 }
@@ -291,12 +368,14 @@ string LanguageOf(string filePath) => Path.GetExtension(filePath).ToLowerInvaria
 
 void RunInfo(string nodeId)
 {
-    if (!TryLoadSessionNodes(out var nodes))
+    if (!TryResolveSession(out var session) || !TryResolveNodeFile(session, nodeId, out var filePath))
     {
+        Console.WriteLine("Node not found.");
         return;
     }
 
-    var node = nodes.FirstOrDefault(n => n.Id == nodeId);
+    var readResult = indexStore.ReadFile(session.MarkerDirectoryPath, filePath);
+    var node = readResult.Nodes.FirstOrDefault(n => n.Id == nodeId);
     if (node is null)
     {
         Console.WriteLine("Node not found.");
@@ -314,12 +393,14 @@ void RunInfo(string nodeId)
 
 void RunGetCode(string nodeId)
 {
-    if (!TryLoadSessionNodes(out var nodes))
+    if (!TryResolveSession(out var session) || !TryResolveNodeFile(session, nodeId, out var filePath))
     {
+        Console.WriteLine("Node not found.");
         return;
     }
 
-    var result = new NodeRetriever().GetCode(nodes, nodeId);
+    var readResult = indexStore.ReadFile(session.MarkerDirectoryPath, filePath);
+    var result = new NodeRetriever().GetCode(readResult.Nodes, nodeId);
     if (!result.Found)
     {
         Console.WriteLine("Node not found.");
@@ -333,15 +414,13 @@ const int DefaultTreeDepth = 3;
 
 void RunTree(string? scopePath, string? depthOption, bool full)
 {
-    if (!TryLoadSessionNodes(out var nodes))
+    if (!TryResolveSession(out var session))
     {
         return;
     }
 
-    var sessionManager = new SessionManager(new SessionRegistry());
-    var resolution = sessionManager.TryResolve(workingDirectory);
-    var files = nodes.Select(n => n.Location.FilePath).Distinct().ToArray();
-    var tree = DirectoryTreeBuilder.Build(resolution.Session!.RootPath, files);
+    var files = AllManifestFiles(session);
+    var tree = DirectoryTreeBuilder.Build(session.RootPath, files);
 
     if (!string.IsNullOrEmpty(scopePath))
     {
@@ -425,11 +504,12 @@ void PrintTree(DirectoryTreeNode node, int depth, int maxDepth)
 
 void RunOutline()
 {
-    if (!TryLoadSessionNodes(out var nodes))
+    if (!TryResolveSession(out var session))
     {
         return;
     }
 
+    var nodes = LoadAllNodesOrEmpty(session);
     var outline = ScopeOutlineBuilder.Build(nodes);
     foreach (var top in outline)
     {
@@ -449,12 +529,12 @@ void PrintOutline(ScopeOutlineNode node, int depth)
 
 void RunLocate(string fragment)
 {
-    if (!TryLoadSessionNodes(out var nodes))
+    if (!TryResolveSession(out var session))
     {
         return;
     }
 
-    var files = nodes.Select(n => n.Location.FilePath).Distinct().ToArray();
+    var files = AllManifestFiles(session);
     var matches = FileLocator.Locate(files, fragment);
     foreach (var match in matches)
     {
@@ -486,9 +566,11 @@ void PrintNodeList(IReadOnlyList<CodeIndexer.Core.Nodes.CodeNode> matches)
 // A relationship command returning zero matches can mean either "genuinely no
 // relationship" or "RelationshipResolver found >1 same-named candidate and
 // declined to guess" — these look identical to the caller unless surfaced.
-// SkippedRelationships notes are name-text matches, not exact edges, so this
-// is a diagnostic hint, not a guarantee the skip really concerns this node.
-void PrintRelationshipResult(IReadOnlyList<CodeIndexer.Core.Nodes.CodeNode> matches, IReadOnlyList<CodeIndexer.Core.Nodes.CodeNode> allNodes, CodeIndexer.Core.Nodes.CodeNode target)
+// SkippedRelationships notes are name-text matches, not exact edges, and may
+// live on a node anywhere in the project (not necessarily one already loaded
+// for the fast path), so the full graph is loaded lazily only in this rare,
+// diagnostic-only branch.
+void PrintRelationshipResult(IReadOnlyList<CodeIndexer.Core.Nodes.CodeNode> matches, Func<IReadOnlyList<CodeIndexer.Core.Nodes.CodeNode>> loadAllNodes, CodeIndexer.Core.Nodes.CodeNode target)
 {
     if (matches.Count > 0)
     {
@@ -496,6 +578,7 @@ void PrintRelationshipResult(IReadOnlyList<CodeIndexer.Core.Nodes.CodeNode> matc
         return;
     }
 
+    var allNodes = loadAllNodes();
     var skips = allNodes
         .SelectMany(n => n.SkippedRelationships)
         .Where(note => note.Contains($"'{target.Name}'", StringComparison.Ordinal))
@@ -517,10 +600,25 @@ void PrintRelationshipResult(IReadOnlyList<CodeIndexer.Core.Nodes.CodeNode> matc
 
 void RunChildren(string nodeId)
 {
-    if (!TryLoadSessionNodes(out var nodes))
+    if (!TryResolveSession(out var session) || !TryResolveNodeFile(session, nodeId, out var filePath))
     {
+        Console.WriteLine("(node not found)");
         return;
     }
+
+    var localNodes = indexStore.ReadFile(session.MarkerDirectoryPath, filePath).Nodes;
+    var container = localNodes.FirstOrDefault(n => n.Id == nodeId);
+    if (container is null)
+    {
+        Console.WriteLine("(node not found)");
+        return;
+    }
+
+    // Containment almost always stays within one file, but the resolver can
+    // fall back to a cross-file parent for reopened namespaces — pull in
+    // whichever other files are actually needed rather than assuming.
+    var extraFiles = ResolveMissingTargetFiles(session, container, CodeIndexer.Core.Nodes.EdgeKind.Contains, localNodes);
+    var nodes = extraFiles.Count == 0 ? localNodes : LoadNodesForRelationshipQuery(session, filePath, extraFiles);
 
     PrintChildren(new ReferenceFinder().GetChildren(nodes, nodeId));
 }
@@ -544,10 +642,17 @@ void PrintChildren(IReadOnlyList<CodeIndexer.Core.Nodes.CodeNode> children)
 
 void RunRefs(string nodeId)
 {
-    if (!TryLoadSessionNodes(out var nodes))
+    if (!TryResolveSession(out var session) || !TryResolveNodeFile(session, nodeId, out var targetFile))
     {
+        Console.WriteLine("(node not found)");
         return;
     }
+
+    var allFiles = AllManifestFiles(session);
+    var relations = indexStore.ReadRelations(session.MarkerDirectoryPath, allFiles);
+    var sourceIds = relations.Where(r => r.TargetNodeId == nodeId).Select(r => r.SourceNodeId).ToHashSet();
+    var sourceFiles = ResolveFilesForIds(session, sourceIds);
+    var nodes = LoadNodesForRelationshipQuery(session, targetFile, sourceFiles);
 
     var target = nodes.FirstOrDefault(n => n.Id == nodeId);
     if (target is null)
@@ -563,7 +668,7 @@ void RunRefs(string nodeId)
         return;
     }
 
-    PrintRelationshipResult(Array.Empty<CodeIndexer.Core.Nodes.CodeNode>(), nodes, target);
+    PrintRelationshipResult(Array.Empty<CodeIndexer.Core.Nodes.CodeNode>(), () => LoadAllNodesOrEmpty(session), target);
 }
 
 void PrintReferenceHits(IReadOnlyList<ReferenceHit> hits)
@@ -597,44 +702,74 @@ bool TryRequireKind(IReadOnlyList<CodeIndexer.Core.Nodes.CodeNode> nodes, string
     return true;
 }
 
-void RunCallers(string nodeId)
+/// <summary>
+/// Shared shape for the reverse-lookup relationship commands (callers/
+/// subtypes/usages): resolve the target's own file to check its kind, scan
+/// every file's relations.json (not their bodies) for matching edges, then
+/// load only the distinct files that actually matched before delegating to
+/// <see cref="ReferenceFinder"/>.
+/// </summary>
+void RunReverseRelationshipQuery(
+    string nodeId,
+    string commandName,
+    CodeIndexer.Core.Nodes.NodeKind[] allowedKinds,
+    Func<string, bool> relationKindMatches,
+    Func<IReadOnlyList<CodeIndexer.Core.Nodes.CodeNode>, string, IReadOnlyList<CodeIndexer.Core.Nodes.CodeNode>> selectMatches)
 {
-    if (!TryLoadSessionNodes(out var nodes) || !TryRequireKind(nodes, nodeId, "callers", out var target, CodeIndexer.Core.Nodes.NodeKind.Method))
+    if (!TryResolveSession(out var session) || !TryResolveNodeFile(session, nodeId, out var targetFile))
+    {
+        Console.WriteLine("(node not found)");
+        return;
+    }
+
+    var targetFileNodes = indexStore.ReadFile(session.MarkerDirectoryPath, targetFile).Nodes;
+    if (!TryRequireKind(targetFileNodes, nodeId, commandName, out var target, allowedKinds))
     {
         return;
     }
 
-    PrintRelationshipResult(new ReferenceFinder().GetCallers(nodes, nodeId), nodes, target!);
+    var allFiles = AllManifestFiles(session);
+    var relations = indexStore.ReadRelations(session.MarkerDirectoryPath, allFiles);
+    var sourceIds = relations.Where(r => r.TargetNodeId == nodeId && relationKindMatches(r.Kind)).Select(r => r.SourceNodeId).ToHashSet();
+    var sourceFiles = ResolveFilesForIds(session, sourceIds);
+    var nodes = LoadNodesForRelationshipQuery(session, targetFile, sourceFiles);
+
+    PrintRelationshipResult(selectMatches(nodes, nodeId), () => LoadAllNodesOrEmpty(session), target!);
 }
+
+void RunCallers(string nodeId) => RunReverseRelationshipQuery(
+    nodeId, "callers", new[] { CodeIndexer.Core.Nodes.NodeKind.Method },
+    kind => kind == nameof(CodeIndexer.Core.Nodes.EdgeKind.Calls),
+    (nodes, id) => new ReferenceFinder().GetCallers(nodes, id));
+
+void RunSubtypes(string nodeId) => RunReverseRelationshipQuery(
+    nodeId, "subtypes", new[] { CodeIndexer.Core.Nodes.NodeKind.Class, CodeIndexer.Core.Nodes.NodeKind.Interface, CodeIndexer.Core.Nodes.NodeKind.Struct },
+    kind => kind is nameof(CodeIndexer.Core.Nodes.EdgeKind.Inherits) or nameof(CodeIndexer.Core.Nodes.EdgeKind.Implements),
+    (nodes, id) => new ReferenceFinder().GetSubtypes(nodes, id));
+
+void RunUsages(string nodeId) => RunReverseRelationshipQuery(
+    nodeId, "usages", new[] { CodeIndexer.Core.Nodes.NodeKind.Class, CodeIndexer.Core.Nodes.NodeKind.Interface, CodeIndexer.Core.Nodes.NodeKind.Struct, CodeIndexer.Core.Nodes.NodeKind.Enum },
+    kind => kind == nameof(CodeIndexer.Core.Nodes.EdgeKind.References),
+    (nodes, id) => new ReferenceFinder().GetUsages(nodes, id));
 
 void RunCallees(string nodeId)
 {
-    if (!TryLoadSessionNodes(out var nodes) || !TryRequireKind(nodes, nodeId, "callees", out _, CodeIndexer.Core.Nodes.NodeKind.Method))
+    if (!TryResolveSession(out var session) || !TryResolveNodeFile(session, nodeId, out var filePath))
+    {
+        Console.WriteLine("(node not found)");
+        return;
+    }
+
+    var localNodes = indexStore.ReadFile(session.MarkerDirectoryPath, filePath).Nodes;
+    if (!TryRequireKind(localNodes, nodeId, "callees", out var source, CodeIndexer.Core.Nodes.NodeKind.Method))
     {
         return;
     }
+
+    var extraFiles = ResolveMissingTargetFiles(session, source!, CodeIndexer.Core.Nodes.EdgeKind.Calls, localNodes);
+    var nodes = extraFiles.Count == 0 ? localNodes : LoadNodesForRelationshipQuery(session, filePath, extraFiles);
 
     PrintNodeList(new ReferenceFinder().GetCallees(nodes, nodeId));
-}
-
-void RunSubtypes(string nodeId)
-{
-    if (!TryLoadSessionNodes(out var nodes) || !TryRequireKind(nodes, nodeId, "subtypes", out var target, CodeIndexer.Core.Nodes.NodeKind.Class, CodeIndexer.Core.Nodes.NodeKind.Interface, CodeIndexer.Core.Nodes.NodeKind.Struct))
-    {
-        return;
-    }
-
-    PrintRelationshipResult(new ReferenceFinder().GetSubtypes(nodes, nodeId), nodes, target!);
-}
-
-void RunUsages(string nodeId)
-{
-    if (!TryLoadSessionNodes(out var nodes) || !TryRequireKind(nodes, nodeId, "usages", out var target, CodeIndexer.Core.Nodes.NodeKind.Class, CodeIndexer.Core.Nodes.NodeKind.Interface, CodeIndexer.Core.Nodes.NodeKind.Struct, CodeIndexer.Core.Nodes.NodeKind.Enum))
-    {
-        return;
-    }
-
-    PrintRelationshipResult(new ReferenceFinder().GetUsages(nodes, nodeId), nodes, target!);
 }
 
 void PrintHelp()

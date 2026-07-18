@@ -1,6 +1,7 @@
 using CodeIndexer.Core.Nodes;
 using CodeIndexer.Core.Parsing;
 using CodeIndexer.Indexing;
+using CodeIndexer.Indexing.Manifest;
 using CodeIndexer.Indexing.Sessions;
 using CodeIndexer.Parsing.CSharp;
 using CodeIndexer.Search;
@@ -13,14 +14,15 @@ namespace CodeIndexer.Tests.Integration;
 
 /// <summary>
 /// Exercises the whole v1 loop for real: write source files to disk, run the
-/// actual orchestrator (discovery + Roslyn parsing + binary storage), then
-/// drive search, retrieval, and structure views against what got persisted.
-/// No component is mocked — this is what the CLI does end to end.
+/// actual orchestrator (discovery + Roslyn parsing + JSON per-file storage),
+/// then drive search, retrieval, and structure views against what got
+/// persisted. No component is mocked — this is what the CLI does end to end.
 /// </summary>
 public class EndToEndTests : IDisposable
 {
     private readonly string _root;
     private readonly IReadOnlyList<ICodeParser> _parsers = new ICodeParser[] { new CSharpParser() };
+    private readonly IIndexStore _indexStore = new JsonIndexStore();
 
     public EndToEndTests()
     {
@@ -35,18 +37,23 @@ public class EndToEndTests : IDisposable
         File.WriteAllText(fullPath, content);
     }
 
+    private IReadOnlyList<CodeNode> ReadAllPersistedNodes(Session session)
+    {
+        var manifest = FileManifestStore.Read(session.ManifestFilePath);
+        var readResult = _indexStore.ReadFiles(session.MarkerDirectoryPath, manifest.FileHashes.Keys.ToArray());
+        Assert.True(readResult.Success, readResult.Detail);
+        return readResult.Nodes;
+    }
+
     private async Task<(Session Session, IReadOnlyList<CodeNode> Nodes, IndexRunResult Result)> IndexAsync()
     {
         var sessionManager = new SessionManager(new SessionRegistry(Path.Combine(_root, "registry.json")));
         var session = sessionManager.EnsureSession(_root);
 
-        var orchestrator = new IndexOrchestrator(_parsers);
+        var orchestrator = new IndexOrchestrator(_parsers, _indexStore);
         var result = await orchestrator.RunFullIndexAsync(session, CancellationToken.None);
 
-        var readResult = new BinaryIndexStore().Read(session.IndexFilePath);
-        Assert.True(readResult.Success, readResult.Detail);
-
-        return (session, readResult.Nodes, result);
+        return (session, ReadAllPersistedNodes(session), result);
     }
 
     private async Task<(Session Session, IReadOnlyList<CodeNode> Nodes, IncrementalIndexResult Result)> UpdateAsync()
@@ -54,13 +61,10 @@ public class EndToEndTests : IDisposable
         var sessionManager = new SessionManager(new SessionRegistry(Path.Combine(_root, "registry.json")));
         var session = sessionManager.EnsureSession(_root);
 
-        var orchestrator = new IndexOrchestrator(_parsers);
+        var orchestrator = new IndexOrchestrator(_parsers, _indexStore);
         var result = await orchestrator.RunIncrementalIndexAsync(session, CancellationToken.None);
 
-        var readResult = new BinaryIndexStore().Read(session.IndexFilePath);
-        Assert.True(readResult.Success, readResult.Detail);
-
-        return (session, readResult.Nodes, result);
+        return (session, ReadAllPersistedNodes(session), result);
     }
 
     [Fact]
@@ -228,7 +232,7 @@ public class EndToEndTests : IDisposable
         var greetMethod = Assert.Single(nodes, n => n.QualifiedName == "SampleApp.Greeter.Greet");
         var formatMethod = Assert.Single(nodes, n => n.QualifiedName == "SampleApp.Greeter.Format");
 
-        // Implements edge survived Roslyn parsing -> RelationshipResolver -> binary write -> binary read.
+        // Implements edge survived Roslyn parsing -> RelationshipResolver -> JSON shard write -> JSON shard read.
         Assert.Contains(greeterClass.Edges, e => e.Kind == EdgeKind.Implements && e.TargetNodeId == iGreeterInterface.Id);
 
         // Call graph edge: Greet() calls Format().
@@ -344,7 +348,7 @@ public class EndToEndTests : IDisposable
 
         File.WriteAllText(Path.Combine(_root, "src/App.cs"), "namespace App; public class Bar {}");
 
-        var orchestrator = new IndexOrchestrator(_parsers);
+        var orchestrator = new IndexOrchestrator(_parsers, _indexStore);
         var driftBefore = orchestrator.DetectDrift(session);
         Assert.False(driftBefore.IsClean);
         Assert.Single(driftBefore.Changed);
