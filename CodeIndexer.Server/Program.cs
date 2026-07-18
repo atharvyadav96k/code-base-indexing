@@ -354,7 +354,7 @@ void RunSearch(string pattern, bool includeAll)
     foreach (var hit in hits)
     {
         var lang = LanguageOf(hit.FilePath);
-        Console.WriteLine($"{hit.Id}  [{lang}]{new string(' ', Math.Max(1, 5 - lang.Length))}{hit.Kind,-10} {hit.Name}");
+        Console.WriteLine($"{hit.Id}  [{lang}]{new string(' ', Math.Max(1, 5 - lang.Length))}{(CodeIndexer.Core.Nodes.NodeKind)hit.Kind,-10} {hit.Name}");
     }
 }
 
@@ -713,7 +713,7 @@ void RunReverseRelationshipQuery(
     string nodeId,
     string commandName,
     CodeIndexer.Core.Nodes.NodeKind[] allowedKinds,
-    Func<string, bool> relationKindMatches,
+    Func<int, bool> relationKindMatches,
     Func<IReadOnlyList<CodeIndexer.Core.Nodes.CodeNode>, string, IReadOnlyList<CodeIndexer.Core.Nodes.CodeNode>> selectMatches)
 {
     if (!TryResolveSession(out var session) || !TryResolveNodeFile(session, nodeId, out var targetFile))
@@ -739,17 +739,17 @@ void RunReverseRelationshipQuery(
 
 void RunCallers(string nodeId) => RunReverseRelationshipQuery(
     nodeId, "callers", new[] { CodeIndexer.Core.Nodes.NodeKind.Method },
-    kind => kind == nameof(CodeIndexer.Core.Nodes.EdgeKind.Calls),
+    kind => kind == (int)CodeIndexer.Core.Nodes.EdgeKind.Calls,
     (nodes, id) => new ReferenceFinder().GetCallers(nodes, id));
 
 void RunSubtypes(string nodeId) => RunReverseRelationshipQuery(
     nodeId, "subtypes", new[] { CodeIndexer.Core.Nodes.NodeKind.Class, CodeIndexer.Core.Nodes.NodeKind.Interface, CodeIndexer.Core.Nodes.NodeKind.Struct },
-    kind => kind is nameof(CodeIndexer.Core.Nodes.EdgeKind.Inherits) or nameof(CodeIndexer.Core.Nodes.EdgeKind.Implements),
+    kind => kind == (int)CodeIndexer.Core.Nodes.EdgeKind.Inherits || kind == (int)CodeIndexer.Core.Nodes.EdgeKind.Implements,
     (nodes, id) => new ReferenceFinder().GetSubtypes(nodes, id));
 
 void RunUsages(string nodeId) => RunReverseRelationshipQuery(
     nodeId, "usages", new[] { CodeIndexer.Core.Nodes.NodeKind.Class, CodeIndexer.Core.Nodes.NodeKind.Interface, CodeIndexer.Core.Nodes.NodeKind.Struct, CodeIndexer.Core.Nodes.NodeKind.Enum },
-    kind => kind == nameof(CodeIndexer.Core.Nodes.EdgeKind.References),
+    kind => kind == (int)CodeIndexer.Core.Nodes.EdgeKind.References,
     (nodes, id) => new ReferenceFinder().GetUsages(nodes, id));
 
 void RunCallees(string nodeId)
