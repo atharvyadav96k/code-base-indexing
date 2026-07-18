@@ -22,7 +22,11 @@ namespace CodeIndexer.Indexing.Relationships;
 /// <item>Calls are the most approximate: a regex finds call-shaped
 /// identifiers in a method's body text and links to another method only when
 /// its name is unique across the whole project. Overloaded or same-named
-/// methods in different types are skipped rather than guessed at.</item>
+/// methods in different types are skipped rather than guessed at — except
+/// when the candidates are exactly an interface/base method plus its
+/// implementer(s)/override(s) (already known via resolved Implements/Inherits
+/// edges), which is a real polymorphic dispatch and resolves to all of
+/// them.</item>
 /// <item>References cover a parameter/field/property type naming another
 /// indexed type — chiefly constructor-injected dependencies — resolved the
 /// same unambiguous-name-match way, including one level of generic unwrapping
@@ -56,9 +60,15 @@ public static class RelationshipResolver
             skipsByNodeId[node.Id] = new List<string>();
         }
 
-        ResolveContainment(nodes, edgesByNodeId);
+        var byQualifiedName = nodes.ToLookup(n => n.QualifiedName);
+
+        ResolveContainment(nodes, byQualifiedName, edgesByNodeId);
         ResolveInheritance(nodes, edgesByNodeId, skipsByNodeId);
-        ResolveCalls(nodes, edgesByNodeId, skipsByNodeId);
+
+        var containingTypeByNodeId = BuildContainingTypeMap(nodes, byQualifiedName);
+        var ancestorTypeIdsByTypeId = BuildAncestorTypeIdsMap(nodes, edgesByNodeId);
+
+        ResolveCalls(nodes, edgesByNodeId, skipsByNodeId, containingTypeByNodeId, ancestorTypeIdsByTypeId);
         ResolveImports(nodes, edgesByNodeId);
         ResolveTypeUsages(nodes, edgesByNodeId, skipsByNodeId);
 
@@ -71,7 +81,7 @@ public static class RelationshipResolver
     private static string BuildAmbiguityNote(string relationshipDescription, string simpleName, IReadOnlyList<CodeNode> candidates) =>
         $"{relationshipDescription} '{simpleName}' skipped: {candidates.Count} ambiguous candidates ({string.Join(", ", candidates.Select(DescribeCandidate))})";
 
-    private static void ResolveContainment(IReadOnlyList<CodeNode> nodes, Dictionary<string, List<NodeEdge>> edgesByNodeId)
+    private static void ResolveContainment(IReadOnlyList<CodeNode> nodes, ILookup<string, CodeNode> byQualifiedName, Dictionary<string, List<NodeEdge>> edgesByNodeId)
     {
         // A qualified name is not a unique key on its own: multiple files can
         // reopen the same namespace (every file in a folder declaring
@@ -82,8 +92,6 @@ public static class RelationshipResolver
         // same-file match and only fall back to a cross-file one (nested
         // types/classes, where qualified names really are unique) when no
         // same-file candidate exists.
-        var byQualifiedName = nodes.ToLookup(n => n.QualifiedName);
-
         foreach (var node in nodes)
         {
             if (node.ScopeChain.Count <= 1)
@@ -144,7 +152,12 @@ public static class RelationshipResolver
         }
     }
 
-    private static void ResolveCalls(IReadOnlyList<CodeNode> nodes, Dictionary<string, List<NodeEdge>> edgesByNodeId, Dictionary<string, List<string>> skipsByNodeId)
+    private static void ResolveCalls(
+        IReadOnlyList<CodeNode> nodes,
+        Dictionary<string, List<NodeEdge>> edgesByNodeId,
+        Dictionary<string, List<string>> skipsByNodeId,
+        IReadOnlyDictionary<string, CodeNode?> containingTypeByNodeId,
+        IReadOnlyDictionary<string, HashSet<string>> ancestorTypeIdsByTypeId)
     {
         var methodsByName = nodes.Where(n => n.Kind == NodeKind.Method).ToLookup(n => n.Name);
 
@@ -166,6 +179,20 @@ public static class RelationshipResolver
                 }
 
                 var candidates = methodsByName[calleeName].Where(c => c.Id != node.Id).ToArray();
+
+                if (candidates.Length > 1 && IsPolymorphicDispatchGroup(candidates, containingTypeByNodeId, ancestorTypeIdsByTypeId))
+                {
+                    foreach (var candidate in candidates)
+                    {
+                        if (seenTargets.Add(candidate.Id))
+                        {
+                            edgesByNodeId[node.Id].Add(new NodeEdge { Kind = EdgeKind.Calls, TargetNodeId = candidate.Id });
+                        }
+                    }
+
+                    continue;
+                }
+
                 if (candidates.Length > 1 && seenAmbiguousNames.Add(calleeName))
                 {
                     skipsByNodeId[node.Id].Add(BuildAmbiguityNote("call to", calleeName, candidates));
@@ -182,6 +209,99 @@ public static class RelationshipResolver
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// True when an ambiguous same-name candidate set is not actually
+    /// ambiguous — it's exactly one interface/base-class declaration plus one
+    /// or more members whose containing type already has a resolved
+    /// Implements/Inherits edge to that declaration's containing type (a
+    /// normal polymorphic dispatch: an interface method and its
+    /// implementation, or a virtual method and its override).
+    /// </summary>
+    private static bool IsPolymorphicDispatchGroup(
+        IReadOnlyList<CodeNode> candidates,
+        IReadOnlyDictionary<string, CodeNode?> containingTypeByNodeId,
+        IReadOnlyDictionary<string, HashSet<string>> ancestorTypeIdsByTypeId)
+    {
+        var containingTypes = candidates.Select(c => containingTypeByNodeId.GetValueOrDefault(c.Id)).ToArray();
+        if (containingTypes.Any(t => t is null))
+        {
+            return false;
+        }
+
+        // The "ancestor" declaration is the one whose containing type does not
+        // itself point to (inherit/implement) any other candidate's containing
+        // type in this group — every implementer/override does point back to it.
+        var ancestorCandidates = containingTypes
+            .Where(t => !containingTypes.Any(other =>
+                other!.Id != t!.Id && ancestorTypeIdsByTypeId.GetValueOrDefault(t!.Id)?.Contains(other.Id) == true))
+            .ToArray();
+
+        if (ancestorCandidates.Length != 1)
+        {
+            return false;
+        }
+
+        var ancestorTypeId = ancestorCandidates[0]!.Id;
+        return containingTypes.All(t => t!.Id == ancestorTypeId
+            || ancestorTypeIdsByTypeId.GetValueOrDefault(t.Id)?.Contains(ancestorTypeId) == true);
+    }
+
+    /// <summary>
+    /// For every node, its immediately-containing Class/Interface/Struct
+    /// declaration (or null if it isn't a direct member of one) — reuses the
+    /// same parent-resolution approach as <see cref="ResolveContainment"/>.
+    /// </summary>
+    private static Dictionary<string, CodeNode?> BuildContainingTypeMap(IReadOnlyList<CodeNode> nodes, ILookup<string, CodeNode> byQualifiedName)
+    {
+        var result = new Dictionary<string, CodeNode?>();
+
+        foreach (var node in nodes)
+        {
+            if (node.ScopeChain.Count <= 1)
+            {
+                result[node.Id] = null;
+                continue;
+            }
+
+            var parentChain = node.ScopeChain.Take(node.ScopeChain.Count - 1).ToArray();
+            var parentQualifiedName = ScopeNameBuilder.Build(parentChain, node.ScopeSeparator);
+
+            var candidates = byQualifiedName[parentQualifiedName]
+                .Where(c => c.Kind is NodeKind.Class or NodeKind.Interface or NodeKind.Struct)
+                .ToArray();
+            var parent = candidates.FirstOrDefault(c => c.Location.FilePath == node.Location.FilePath)
+                ?? candidates.FirstOrDefault();
+
+            result[node.Id] = parent;
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// For every Class/Interface/Struct node, the IDs of its own direct
+    /// Implements/Inherits targets (no transitive walk).
+    /// </summary>
+    private static Dictionary<string, HashSet<string>> BuildAncestorTypeIdsMap(IReadOnlyList<CodeNode> nodes, Dictionary<string, List<NodeEdge>> edgesByNodeId)
+    {
+        var result = new Dictionary<string, HashSet<string>>();
+
+        foreach (var node in nodes)
+        {
+            if (node.Kind is not (NodeKind.Class or NodeKind.Interface or NodeKind.Struct))
+            {
+                continue;
+            }
+
+            result[node.Id] = edgesByNodeId[node.Id]
+                .Where(e => e.Kind is EdgeKind.Implements or EdgeKind.Inherits)
+                .Select(e => e.TargetNodeId)
+                .ToHashSet();
+        }
+
+        return result;
     }
 
     private static void ResolveImports(IReadOnlyList<CodeNode> nodes, Dictionary<string, List<NodeEdge>> edgesByNodeId)

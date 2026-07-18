@@ -169,6 +169,63 @@ public class RelationshipResolverTests
     }
 
     [Fact]
+    public void Resolve_CallAmbiguousBetweenInterfaceAndItsImplementation_ResolvesToBoth()
+    {
+        var iface = MakeNode("Bar", "App.IFoo.Bar", NodeKind.Method, filePath: "IFoo.cs");
+        var ifaceType = MakeNode("IFoo", "App.IFoo", NodeKind.Interface, filePath: "IFoo.cs");
+        var metadata = new NodeMetadata().WithBaseTypes(new[] { "IFoo" });
+        var implType = MakeNode("Foo", "App.Foo", NodeKind.Class, metadata: metadata, filePath: "Foo.cs");
+        var impl = MakeNode("Bar", "App.Foo.Bar", NodeKind.Method, filePath: "Foo.cs");
+        var caller = MakeNode("Commit", "App.Commit", NodeKind.Method, body: "public void Commit() { Bar(); }", filePath: "Caller.cs");
+
+        var resolved = RelationshipResolver.Resolve(new[] { ifaceType, iface, implType, impl, caller });
+
+        var resolvedCaller = resolved.Single(n => n.Id == caller.Id);
+        Assert.Contains(resolvedCaller.Edges, e => e.Kind == EdgeKind.Calls && e.TargetNodeId == iface.Id);
+        Assert.Contains(resolvedCaller.Edges, e => e.Kind == EdgeKind.Calls && e.TargetNodeId == impl.Id);
+        Assert.DoesNotContain(resolvedCaller.SkippedRelationships, note => note.Contains("'Bar'"));
+    }
+
+    [Fact]
+    public void Resolve_CallAmbiguousBetweenBaseVirtualMethodAndOverride_ResolvesToBoth()
+    {
+        var baseType = MakeNode("Animal", "App.Animal", NodeKind.Class, filePath: "Animal.cs");
+        var baseMethod = MakeNode("Speak", "App.Animal.Speak", NodeKind.Method, filePath: "Animal.cs");
+        var metadata = new NodeMetadata().WithBaseTypes(new[] { "Animal" });
+        var derivedType = MakeNode("Dog", "App.Dog", NodeKind.Class, metadata: metadata, filePath: "Dog.cs");
+        var derivedMethod = MakeNode("Speak", "App.Dog.Speak", NodeKind.Method, filePath: "Dog.cs");
+        var caller = MakeNode("Commit", "App.Commit", NodeKind.Method, body: "public void Commit() { Speak(); }", filePath: "Caller.cs");
+
+        var resolved = RelationshipResolver.Resolve(new[] { baseType, baseMethod, derivedType, derivedMethod, caller });
+
+        var resolvedCaller = resolved.Single(n => n.Id == caller.Id);
+        Assert.Contains(resolvedCaller.Edges, e => e.Kind == EdgeKind.Calls && e.TargetNodeId == baseMethod.Id);
+        Assert.Contains(resolvedCaller.Edges, e => e.Kind == EdgeKind.Calls && e.TargetNodeId == derivedMethod.Id);
+        Assert.DoesNotContain(resolvedCaller.SkippedRelationships, note => note.Contains("'Speak'"));
+    }
+
+    [Fact]
+    public void Resolve_CallAmbiguousAcrossMultipleImplementersOfSameInterface_ResolvesToAll()
+    {
+        var iface = MakeNode("Bar", "App.IFoo.Bar", NodeKind.Method, filePath: "IFoo.cs");
+        var ifaceType = MakeNode("IFoo", "App.IFoo", NodeKind.Interface, filePath: "IFoo.cs");
+        var metadata = new NodeMetadata().WithBaseTypes(new[] { "IFoo" });
+        var implTypeA = MakeNode("FooA", "App.FooA", NodeKind.Class, metadata: metadata, filePath: "FooA.cs");
+        var implA = MakeNode("Bar", "App.FooA.Bar", NodeKind.Method, filePath: "FooA.cs");
+        var implTypeB = MakeNode("FooB", "App.FooB", NodeKind.Class, metadata: metadata, filePath: "FooB.cs");
+        var implB = MakeNode("Bar", "App.FooB.Bar", NodeKind.Method, filePath: "FooB.cs");
+        var caller = MakeNode("Commit", "App.Commit", NodeKind.Method, body: "public void Commit() { Bar(); }", filePath: "Caller.cs");
+
+        var resolved = RelationshipResolver.Resolve(new[] { ifaceType, iface, implTypeA, implA, implTypeB, implB, caller });
+
+        var resolvedCaller = resolved.Single(n => n.Id == caller.Id);
+        Assert.Contains(resolvedCaller.Edges, e => e.Kind == EdgeKind.Calls && e.TargetNodeId == iface.Id);
+        Assert.Contains(resolvedCaller.Edges, e => e.Kind == EdgeKind.Calls && e.TargetNodeId == implA.Id);
+        Assert.Contains(resolvedCaller.Edges, e => e.Kind == EdgeKind.Calls && e.TargetNodeId == implB.Id);
+        Assert.DoesNotContain(resolvedCaller.SkippedRelationships, note => note.Contains("'Bar'"));
+    }
+
+    [Fact]
     public void Resolve_ControlFlowKeywordsAndSelfCalls_AreNotTreatedAsCalls()
     {
         var caller = MakeNode(
